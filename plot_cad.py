@@ -2,23 +2,27 @@ import folium
 import webbrowser
 import os
 import json
-from pyproj import Transformer
+from pyproj import CRS, Transformer
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+import matplotlib.colors as mcolors
 
-CAD_MAP = "panels_with_row_plaintext_below.geojson"
+CAD_MAP = "section_1_ir_cad (1).geojson"
 
-def plot_cad_map(target_gps, corner_gps=None, drone_gps=None, geojson_file=CAD_MAP, map_file="target_map_cad.html"):
+def plot_cad_map(target_gps, points=None, corner_gps=None, drone_gps=None,
+                 geojson_file=CAD_MAP, map_file="target_map_cad.html"):
     """
-    Plots the target, drone, and corners on a folium map using a GeoJSON CAD file as background.
-    Automatically reprojects the GeoJSON to WGS84 if needed.
+    Plots the target, drone, corners, and multiple GPS points on a folium map using a GeoJSON CAD file.
+    GPS points are color-coded by score.
 
     Parameters:
-        target_gps: tuple (lat, lon) of the target pixel
+        target_gps: tuple (lat, lon) of the main target
+        points: list of dicts [{'gps': (lat, lon), 'score': float}, ...] (optional)
         corner_gps: list of tuples [(lat, lon), ...] for image corners (optional)
-        drone_gps: tuple (lat, lon) for the drone position (optional)
+        drone_gps: tuple (lat, lon) for drone position (optional)
         geojson_file: path to GeoJSON CAD file
         map_file: filename to save HTML map
     """
-
     lat, lon = target_gps
 
     # --- Load GeoJSON ---
@@ -27,20 +31,21 @@ def plot_cad_map(target_gps, corner_gps=None, drone_gps=None, geojson_file=CAD_M
 
     # --- Check CRS and convert if needed ---
     crs_name = geojson_data.get("crs", {}).get("properties", {}).get("name", "EPSG:4326")
-    if "4326" not in crs_name:  # Not WGS84
-        #print(f"Reprojecting GeoJSON from {crs_name} to EPSG:4326")
-        # Extract EPSG code from string (e.g., "urn:ogc:def:crs:EPSG::25829")
-        epsg_code = crs_name.split(":")[-1]
-        transformer = Transformer.from_crs(f"EPSG:{epsg_code}", "EPSG:4326", always_xy=True)
-
+    if "4326" not in crs_name:
+        try:
+            src_crs = CRS.from_user_input(crs_name)
+        except Exception:
+            epsg_code = crs_name.split(":")[-1]
+            src_crs = CRS.from_epsg(int(epsg_code))
+        transformer = Transformer.from_crs(src_crs, CRS.from_epsg(4326), always_xy=True)
         for feature in geojson_data["features"]:
             geom = feature["geometry"]
             if geom["type"] == "Polygon":
-                new_coords = []
-                for ring in geom["coordinates"]:
-                    new_ring = [list(transformer.transform(x, y)) for x, y in ring]
-                    new_coords.append(new_ring)
-                geom["coordinates"] = new_coords
+                geom["coordinates"] = [[list(transformer.transform(x, y)) for x, y in ring]
+                                       for ring in geom["coordinates"]]
+            elif geom["type"] == "MultiPolygon":
+                geom["coordinates"] = [[[list(transformer.transform(x, y)) for x, y in ring] for ring in poly]
+                                       for poly in geom["coordinates"]]
 
     # --- Base map centered on target ---
     m = folium.Map(
@@ -51,8 +56,6 @@ def plot_cad_map(target_gps, corner_gps=None, drone_gps=None, geojson_file=CAD_M
         tiles="https://stamen-tiles.a.ssl.fastly.net/terrain/{z}/{x}/{y}.jpg",
         attr="Map tiles by Stamen Design, CC BY 3.0 — Map data © OpenStreetMap contributors"
     )
-
-
 
     # --- Add GeoJSON layer ---
     folium.GeoJson(
@@ -66,6 +69,26 @@ def plot_cad_map(target_gps, corner_gps=None, drone_gps=None, geojson_file=CAD_M
         },
         tooltip=folium.GeoJsonTooltip(fields=[]),
     ).add_to(m)
+
+    # --- Plot GPS points with color based on score ---
+    if points:
+        scores = [pt.get('score', 0.5) for pt in points]
+        norm = mcolors.Normalize(vmin=min(scores), vmax=max(scores))
+        cmap = cm.get_cmap('YlOrRd')
+
+        for pt in points:
+            lat_pt, lon_pt = pt['gps']
+            score = pt.get('score', 0.5)
+            color = mcolors.to_hex(cmap(norm(score)))
+            folium.CircleMarker(
+                [lat_pt, lon_pt],
+                radius=5 + score*5,
+                color=None,
+                fill=True,
+                fill_color=color,
+                fill_opacity=0.7,
+                popup=f"Score: {score:.2f}\nLat: {lat_pt:.7f}\nLon: {lon_pt:.7f}"
+            ).add_to(m)
 
     # --- Marker for target pixel ---
     folium.Marker(
