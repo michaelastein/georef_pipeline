@@ -36,15 +36,39 @@ def compute_image_scores(data_array):
         combined_score = (nadir_score + center_score) / 2
         item['score'] = float(np.clip(combined_score, 0, 1))
 
-# ----------------- Weighted average GPS by cluster  -----------------
-def weighted_average_gps(data_array, max_distance=40.0):
-    """Compute weighted average GPS using only points within max_distance of first image."""
+# ----------------- Filter points by distance from first image -----------------
+def filter_images_by_distance(data_array, max_distance=50.0):
+    """
+    Remove images whose GPS is more than max_distance meters from the first image.
+    Returns the filtered list.
+    """
     if not data_array:
-        return None, None
+        return []
 
-    ref_lat, ref_lon = data_array[0].get('gps_lat'), data_array[0].get('gps_lon')
+    ref_lat = data_array[0].get('gps_lat')
+    ref_lon = data_array[0].get('gps_lon')
     if ref_lat is None or ref_lon is None:
-        print("First image GPS is missing, cannot determine cluster.")
+        print("First image GPS missing, cannot filter by distance.")
+        return data_array
+
+    filtered = []
+    for item in data_array:
+        lat = item.get('gps_lat')
+        lon = item.get('gps_lon')
+        if lat is None or lon is None:
+            continue
+        distance = haversine(ref_lat, ref_lon, lat, lon)
+        if distance <= max_distance:
+            filtered.append(item)
+    return filtered
+
+# ----------------- Weighted average GPS -----------------
+def weighted_average_gps(data_array, z_thresh=2.0):
+    """
+    Compute weighted average GPS while ignoring single outliers.
+    z_thresh: number of weighted std deviations to consider as outlier.
+    """
+    if not data_array:
         return None, None
 
     lats, lons, weights = [], [], []
@@ -56,11 +80,9 @@ def weighted_average_gps(data_array, max_distance=40.0):
         lat, lon = target
         if lat is None or lon is None:
             continue
-        distance = haversine(ref_lat, ref_lon, lat, lon)
-        if distance <= max_distance:
-            lats.append(lat)
-            lons.append(lon)
-            weights.append(score)
+        lats.append(lat)
+        lons.append(lon)
+        weights.append(score)
 
     if not lats:
         return None, None
@@ -69,19 +91,28 @@ def weighted_average_gps(data_array, max_distance=40.0):
     lons = np.array(lons)
     weights = np.array(weights)
 
+    # Initial weighted averages
     lat_avg = np.average(lats, weights=weights)
     lon_avg = np.average(lons, weights=weights)
 
+    # Weighted standard deviations
+    lat_std = np.sqrt(np.average((lats - lat_avg)**2, weights=weights))
+    lon_std = np.sqrt(np.average((lons - lon_avg)**2, weights=weights))
+
+    # Filter out outliers
+    mask = ((np.abs(lats - lat_avg) <= z_thresh * lat_std) &
+            (np.abs(lons - lon_avg) <= z_thresh * lon_std))
+    if not np.any(mask):
+        return lat_avg, lon_avg  # fallback: all points are outliers
+
+    lat_avg = np.average(lats[mask], weights=weights[mask])
+    lon_avg = np.average(lons[mask], weights=weights[mask])
+
     return lat_avg, lon_avg
+
 
 # ----------------- GUI to display thumbnails with points -----------------
 def show_images_with_points(points_data, max_thumb_size=150):
-    """
-    Show images with valid points (score > 0) in a scrollable Tkinter window.
-    Draw a red dot on the point location.
-    points_data: list of dicts with keys:
-        'image_path', 'gps', 'score', 'pixel_x', 'pixel_y', 'image_size'
-    """
     valid_points = [p for p in points_data if p.get('score', 0) > 0 and p.get('image_path')]
     if not valid_points:
         print("No images with valid points to show.")
@@ -150,40 +181,29 @@ def main():
         print("No data collected from images.")
         return
 
+    # Filter images that are too far from the first image
+    data = filter_images_by_distance(data, max_distance=70.0)
+
     # Initialize DroneMapper
     mapper = georef_new.DroneMapper()
-    mapper.get_target_gps_array(data)
+    data = mapper.get_target_gps_array(data)  # fills target_gps in data
 
     # Compute scores
     compute_image_scores(data)
 
-    # Compute weighted average GPS as target 
-    avg_lat, avg_lon = weighted_average_gps(data, max_distance=40.0)
+    # Compute weighted average GPS as target
+    avg_lat, avg_lon = weighted_average_gps(data)
     if avg_lat is not None and avg_lon is not None:
         print(f"Target GPS: {avg_lat:.6f}, {avg_lon:.6f}")
     else:
         print("No valid GPS points in cluster near first image.")
         return
 
-    # Prepare points for CAD map plotting
-    points = []
-    for item in data:
-        target = item.get('target_gps')
-        if target and item.get('score', 0) > 0:
-            points.append({
-                'gps': target,
-                'score': item['score'],
-                'image_path': item.get('image_path'),
-                'pixel_x': item.get('pixel_x'),
-                'pixel_y': item.get('pixel_y'),
-                'image_size': item.get('image_size')
-            })
-
-    # Visualize on CAD map
-    plot_cad_map(target_gps=(avg_lat, avg_lon), points=points)
+    # Visualize on CAD map directly using data
+    plot_cad_map(target_gps=(avg_lat, avg_lon), points=data)
 
     # Show thumbnails with points
-    show_images_with_points(points)
+    show_images_with_points(data)
 
 if __name__ == "__main__":
     main()

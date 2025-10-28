@@ -77,7 +77,10 @@ def plot_cad_map(target_gps, points=None, corner_gps=None, drone_gps=None,
         cmap = cm.get_cmap('YlOrRd')
 
         for pt in points:
-            lat_pt, lon_pt = pt['gps']
+            lat_pt, lon_pt = pt.get('target_gps', (None, None))
+            if lat_pt is None or lon_pt is None:
+                continue  # skip points without GPS
+
             score = pt.get('score', 0.5)
             color = mcolors.to_hex(cmap(norm(score)))
             folium.CircleMarker(

@@ -13,9 +13,17 @@ import argparse
 
 
 def main(algorithm = None):
-   
-    feature_algo = algorithm
+    # ----------------- Parameters -----------------
 
+    
+    threshold_meters = 40.0
+    ratio_test = 0.7
+    ransac_thresh = 4.0
+    min_inliers = 20
+    dist_consistency_thresh = 40.0
+    max_workers = 8
+    
+    feature_algo = algorithm
     start_time = time.time()
     progress_lock = threading.Lock()
     data = []
@@ -167,13 +175,7 @@ def main(algorithm = None):
         return
     print(f"Loaded {len(images)} images with GPS info.")
 
-    # ----------------- Parameters -----------------
-    threshold_meters = 100.0
-    ratio_test = 0.7
-    ransac_thresh = 4.0
-    min_inliers = 20
-    dist_consistency_thresh = 40.0
-    max_workers = 8
+    
 
     # ----------------- Detector/descriptor -----------------
     # ----------------- Auto-select feature algorithm if None -----------------
