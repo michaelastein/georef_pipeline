@@ -12,18 +12,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import argparse
 
 
-def main():
-    # ----------------- Command-line arguments -----------------
-    parser = argparse.ArgumentParser(description="Image feature matcher")
-    parser.add_argument(
-        "-a", "--algorithm",
-        choices=["SIFT", "AKAZE", "ORB", "BRISK", "KAZE"],
-        default="SIFT",
-        help="Feature detection algorithm to use"
-    )
-    args = parser.parse_args()
-    feature_algo = args.algorithm.upper()
-    print(f"Using feature algorithm: {feature_algo}")
+def main(algorithm = None):
+   
+    feature_algo = algorithm
 
     start_time = time.time()
     progress_lock = threading.Lock()
@@ -185,6 +176,15 @@ def main():
     max_workers = 8
 
     # ----------------- Detector/descriptor -----------------
+    # ----------------- Auto-select feature algorithm if None -----------------
+    if feature_algo is None:
+        first_path = img_paths[0]
+        if first_path.lower().endswith(".tiff") or first_path.lower().endswith(".tif"):
+            feature_algo = "BRISK"
+        else:
+            feature_algo = "SIFT"
+     
+
     if feature_algo == "SIFT":
         detector = cv2.SIFT_create()
         descriptor_type = 'float'
@@ -202,7 +202,9 @@ def main():
         descriptor_type = 'float'
     else:
         raise ValueError(f"Unsupported feature algorithm: {feature_algo}")
-    print(f"Detector created: {detector}")
+    
+    print(f"Using feature algorithm: {feature_algo}")
+
 
     # ----------------- Matcher -----------------
     if descriptor_type == 'float':
@@ -502,4 +504,13 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # ----------------- Command-line arguments -----------------
+    parser = argparse.ArgumentParser(description="Image feature matcher")
+    parser.add_argument(
+        "-a", "--algorithm",
+        choices=["SIFT", "AKAZE", "ORB", "BRISK", "KAZE"],
+        default=None,
+        help="Feature detection algorithm to use"
+    )
+    args = parser.parse_args()
+    main(args.algorithm.upper())
