@@ -10,6 +10,7 @@ import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import argparse
+import avg_gps
 
 
 def main(algorithm = None):
@@ -26,7 +27,6 @@ def main(algorithm = None):
     feature_algo = algorithm
     start_time = time.time()
     progress_lock = threading.Lock()
-    data = []
 
     def print_progress(current, total, stage_name, last_print=[-1]):
         percent = int((current / total) * 100) if total > 0 else 100
@@ -423,7 +423,6 @@ def main(algorithm = None):
     img_size = 200
 
     def click_event(event, idx):
-        nonlocal data
         x_click, y_click = event.x, event.y
         for m in markers:
             m.destroy()
@@ -475,6 +474,7 @@ def main(algorithm = None):
                 correspondences.append((other, cur_pt[0, 0], cur_pt[1, 0]))
 
         data = collect_correspondence_data(idx, x_orig, y_orig, correspondences)
+        avg_gps.main(data)
 
     for i, img in enumerate(images):
         h, w = img.shape[:2]
@@ -502,7 +502,6 @@ def main(algorithm = None):
     canvas_side.config(scrollregion=canvas_side.bbox("all"))
 
     root.mainloop()
-    return data
 
 
 if __name__ == "__main__":
@@ -515,4 +514,6 @@ if __name__ == "__main__":
         help="Feature detection algorithm to use"
     )
     args = parser.parse_args()
-    main(args.algorithm.upper())
+    algorithm = args.algorithm.upper() if args.algorithm is not None else None
+    main(algorithm)
+

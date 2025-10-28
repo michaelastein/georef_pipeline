@@ -16,7 +16,7 @@ from plot_cad import plot_cad_map  # optional
 DRONE_OFFSET_NORTH = 0.0
 DRONE_OFFSET_EAST  = 0.0
 DRONE_OFFSET_UP    = 0.0
-PANEL_HEIGHT_CORRECTION = 2.0
+PANEL_HEIGHT_CORRECTION = 0.0
 
 # ---------------- Utility Functions ----------------
 def rational_to_float(r):

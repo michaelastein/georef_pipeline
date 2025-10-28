@@ -1,7 +1,6 @@
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import georef_new
-import feature_matching
 from plot_cad import plot_cad_map  # Updated CAD map function
 import tkinter as tk
 from PIL import Image, ImageTk, ImageDraw
@@ -39,7 +38,7 @@ def compute_image_scores(data_array):
 # ----------------- Filter points by distance from first image -----------------
 def filter_images_by_distance(data_array, max_distance=50.0):
     """
-    Remove images whose GPS is more than max_distance meters from the first image.
+    Remove images whose drone GPS is more than max_distance meters from the first image.
     Returns the filtered list.
     """
     if not data_array:
@@ -63,14 +62,16 @@ def filter_images_by_distance(data_array, max_distance=50.0):
     return filtered
 
 # ----------------- Weighted average GPS -----------------
-def weighted_average_gps(data_array, z_thresh=2.0):
+def weighted_average_gps(data_array, z_thresh=2.0, max_distance_m=15.0):
     """
     Compute weighted average GPS while ignoring single outliers.
+    Also removes points farther than max_distance_m meters from the first target GPS.
     z_thresh: number of weighted std deviations to consider as outlier.
     """
     if not data_array:
         return None, None
 
+    # Collect valid target points and weights
     lats, lons, weights = [], [], []
     for item in data_array:
         target = item.get('target_gps')
@@ -91,19 +92,28 @@ def weighted_average_gps(data_array, z_thresh=2.0):
     lons = np.array(lons)
     weights = np.array(weights)
 
-    # Initial weighted averages
+    # --- Remove points too far from first target GPS ---
+    ref_lat, ref_lon = lats[0], lons[0]
+    distances = np.array([haversine(ref_lat, ref_lon, la, lo) for la, lo in zip(lats, lons)])
+    mask_distance = distances <= max_distance_m
+    if not np.any(mask_distance):
+        return ref_lat, ref_lon  # fallback if all points too far
+
+    lats, lons, weights = lats[mask_distance], lons[mask_distance], weights[mask_distance]
+
+    # --- Compute initial weighted averages ---
     lat_avg = np.average(lats, weights=weights)
     lon_avg = np.average(lons, weights=weights)
 
-    # Weighted standard deviations
+    # --- Weighted standard deviations ---
     lat_std = np.sqrt(np.average((lats - lat_avg)**2, weights=weights))
     lon_std = np.sqrt(np.average((lons - lon_avg)**2, weights=weights))
 
-    # Filter out outliers
+    # --- Remove statistical outliers ---
     mask = ((np.abs(lats - lat_avg) <= z_thresh * lat_std) &
             (np.abs(lons - lon_avg) <= z_thresh * lon_std))
     if not np.any(mask):
-        return lat_avg, lon_avg  # fallback: all points are outliers
+        return lat_avg, lon_avg  # fallback if all filtered out
 
     lat_avg = np.average(lats[mask], weights=weights[mask])
     lon_avg = np.average(lons[mask], weights=weights[mask])
@@ -174,12 +184,8 @@ def show_images_with_points(points_data, max_thumb_size=150):
     root.mainloop()
 
 # ----------------- Main pipeline -----------------
-def main():
-    # Load points and EXIF info
-    data = feature_matching.main()
-    if not data:
-        print("No data collected from images.")
-        return
+def main(data):
+  
 
     # Filter images that are too far from the first image
     data = filter_images_by_distance(data, max_distance=70.0)
@@ -203,7 +209,5 @@ def main():
     plot_cad_map(target_gps=(avg_lat, avg_lon), points=data)
 
     # Show thumbnails with points
-    show_images_with_points(data)
+    #show_images_with_points(data)
 
-if __name__ == "__main__":
-    main()
