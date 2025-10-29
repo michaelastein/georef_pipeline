@@ -246,14 +246,14 @@ def show_images_with_points(points_data, max_thumb_size=150, master=None):
 # ----------------- Main pipeline -----------------
 def main(data):
     # Filter images too far from first drone GPS
-    data = filter_points_by_distance(data, max_distance=70.0, gps_type='drone')
+    data = filter_points_by_distance(data, max_distance=40.0, gps_type='drone')
 
     # Initialize DroneMapper and fill target_gps
     mapper = georef_new.DroneMapper()
     data = mapper.get_target_gps_array(data)
 
     # Filter points too far from first target GPS
-    data = filter_points_by_distance(data, max_distance=10.0, gps_type='target')
+    data = filter_points_by_distance(data, max_distance=15.0, gps_type='target')
 
     # Compute image scores
     compute_image_scores(data)
@@ -270,4 +270,4 @@ def main(data):
     plot_cad_map(target_gps=(avg_lat, avg_lon), points=data)
 
     # Show thumbnails of images with points
-    show_images_with_points(data)
+    #show_images_with_points(data)
