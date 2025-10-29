@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 import piexif
-from tkinter import Tk, Canvas, Frame, Scrollbar, Label, LEFT, RIGHT, Y, NW
+from tkinter import Tk, Canvas, Frame, Scrollbar, LEFT, RIGHT, Y, NW
 from PIL import Image, ImageTk
 from tkinter.filedialog import askopenfilenames
 import math
@@ -11,7 +11,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import argparse
 import avg_gps
-
+import queue
+from collections import OrderedDict
 
 def main(algorithm = None):
     # ----------------- Parameters -----------------
@@ -143,7 +144,7 @@ def main(algorithm = None):
     root = Tk()
     root.withdraw()
     img_paths = askopenfilenames(
-        title="Select images (up to 1000)",
+        title="Select images",
         filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff")]
     )
     if len(img_paths) < 1:
@@ -405,38 +406,213 @@ def main(algorithm = None):
                     q.append(nb)
         return None
 
-    # ----------------- GUI Thumbnail Grid -----------------
+    # ----------------- Canvas-based GUI mit Lazy Loading -----------------
     root.deiconify()
-    root.title("Images Grid with Clickable Points")
-    canvas_side = Canvas(root, width=1400, height=800, bg="black")
+    root.title("Images Grid (Canvas + Lazy Loading)")
+    canvas_w, canvas_h = 1400, 800
+    canvas_side = Canvas(root, width=canvas_w, height=canvas_h, bg="black")
     scrollbar = Scrollbar(root, orient="vertical", command=canvas_side.yview)
     canvas_side.configure(yscrollcommand=scrollbar.set)
     canvas_side.pack(side=LEFT, fill="both", expand=1)
     scrollbar.pack(side=RIGHT, fill=Y)
-    frame = Frame(canvas_side, bg="black")
-    canvas_side.create_window((0, 0), window=frame, anchor=NW)
 
-    photo_refs_side = []
-    img_positions = []
-    markers = []
+
+
+    # Layout-Parameter
     cols = 6
-    img_size = 200
+    thumb_size = 200  # Basisgröße (kann dynamisch angepasst werden)
+    padding = 10
+    text_height = 18
+    row_height = thumb_size + text_height + padding
 
-    def click_event(event, idx):
-        x_click, y_click = event.x, event.y
-        for m in markers:
-            m.destroy()
-        markers.clear()
+    # caches
+    # pil_cache holds PIL.Image objects produced in background threads
+    pil_cache = OrderedDict()  # index -> PIL.Image
+    # photo_cache holds ImageTk.PhotoImage objects created in main thread (to draw on Canvas)
+    photo_cache = {}  # index -> PhotoImage
+    MAX_CACHE_ITEMS = 200  # Gesamtzahl von Thumbnails behalten (anpassen je nach RAM)
+    cache_lock = threading.Lock()
 
-        lbl, scale, disp_w, disp_h = img_positions[idx]
-        x_orig, y_orig = x_click / scale, y_click / scale
+    # Queues für Background Loader
+    load_queue = queue.Queue()
+    result_queue = queue.Queue()
+    stop_event = threading.Event()
+
+    # Berechne Positionen bereits (so wissen wir immer bbox auch wenn noch nicht geladen)
+    img_positions = []  # tuple: (x_canvas, y_canvas, scale, disp_w, disp_h)
+    for i, (w, h) in enumerate(orig_sizes):
+        scale = min(thumb_size / h, thumb_size / w)
+        disp_w, disp_h = int(w * scale), int(h * scale)
+        col = i % cols
+        row = i // cols
+        x = padding + col * (thumb_size + padding)
+        y = padding + row * row_height
+        img_positions.append((x, y, scale, disp_w, disp_h))
+
+    # canvas total size
+    n_rows = (len(img_paths) + cols - 1) // cols
+    total_height = padding + n_rows * row_height
+    total_width = padding + cols * (thumb_size + padding)
+    canvas_side.config(scrollregion=(0, 0, total_width, total_height))
+
+    # visible indices helpers
+    def get_visible_indices():
+        y0 = canvas_side.canvasy(0)
+        y1 = canvas_side.canvasy(canvas_side.winfo_height())
+        # consider a margin to preload just-offscreen tiles
+        margin = row_height * 2
+        top_row = max(0, int((y0 - margin) // row_height))
+        bottom_row = min(n_rows - 1, int((y1 + margin) // row_height))
+        indices = []
+        for r in range(top_row, bottom_row + 1):
+            start = r * cols
+            end = min(len(img_paths), start + cols)
+            indices.extend(range(start, end))
+        return set(indices)
+
+    # ----------------- Background loader thread function -----------------
+    def loader_worker():
+        while not stop_event.is_set():
+            try:
+                idx = load_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            with cache_lock:
+                if idx in pil_cache:
+                    load_queue.task_done()
+                    continue
+            path = img_paths[idx]
+            try:
+                bgr = cv2.imread(path)
+                if bgr is None:
+                    load_queue.task_done()
+                    continue
+                _, _, scale, disp_w, disp_h = img_positions[idx]
+                resized = cv2.resize(bgr, (disp_w, disp_h), interpolation=cv2.INTER_AREA)
+                rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+                pil_img = Image.fromarray(rgb)
+                # nur PIL.Image ins result_queue, kein PhotoImage im Thread
+                result_queue.put((idx, pil_img))
+            except Exception as e:
+                print(f"Loader error for index {idx}: {e}")
+            finally:
+                load_queue.task_done()
+
+    # Start a pool of loader threads (gleichzeitiges Lesen + Resize)
+    NUM_LOADER_THREADS = max(2, min(8, os.cpu_count() or 4))
+    loader_threads = []
+    for _ in range(NUM_LOADER_THREADS):
+        t = threading.Thread(target=loader_worker, daemon=True)
+        t.start()
+        loader_threads.append(t)
+
+    # Preloader: enqueued indices near visible area
+    def enqueue_visible_and_neighbors():
+        vis = get_visible_indices()
+        # add neighbors +/- one row for smoother scrolling
+        extra = set()
+        for idx in vis:
+            row = idx // cols
+            for r in range(max(0, row - 1), min(n_rows, row + 2)):
+                start = r * cols
+                extra.update(range(start, min(start + cols, len(img_paths))))
+        to_load = list(extra)
+        # push into queue if not cached/pending
+        for idx in to_load:
+            with cache_lock:
+                if idx in pil_cache:
+                    continue
+            # avoid duplicate queueing via membership check - cheap check by trying to enqueue (no direct way to inspect queue)
+            try:
+                load_queue.put_nowait(idx)
+            except queue.Full:
+                pass
+
+    # Drawing helpers
+    drawn_image_items = {}  # index -> canvas_image_id
+    drawn_text_items = {}   # index -> canvas_text_id
+    marker_items = []       # list of marker canvas ids
+
+    def draw_canvas_image(idx, photo):
+        # If already drawn update? For simplicity: delete old and create new.
+        if idx in drawn_image_items:
+            try:
+                canvas_side.delete(drawn_image_items[idx])
+            except Exception:
+                pass
+        x, y, scale, disp_w, disp_h = img_positions[idx]
+        img_id = canvas_side.create_image(x, y, image=photo, anchor=NW)
+        drawn_image_items[idx] = img_id
+        # draw name text below
+        if idx in drawn_text_items:
+            canvas_side.delete(drawn_text_items[idx])
+        name = os.path.splitext(os.path.basename(img_paths[idx]))[0]
+        tid = canvas_side.create_text(x + disp_w / 2, y + disp_h + 12, text=name, fill="white")
+        drawn_text_items[idx] = tid
+
+    def create_marker_canvas(x, y, color="red", size=6):
+        half = size / 2
+        return canvas_side.create_rectangle(x - half, y - half, x + half, y + half, fill=color, outline=color)
+
+    # ----------------- Main-thread Verarbeitung -----------------
+    def process_loader_results():
+        processed = 0
+        while True:
+            try:
+                idx, pil_img = result_queue.get_nowait()
+            except queue.Empty:
+                break
+            with cache_lock:
+                pil_cache[idx] = pil_img
+                pil_cache.move_to_end(idx)
+                while len(pil_cache) > MAX_CACHE_ITEMS:
+                    old_idx, _ = pil_cache.popitem(last=False)
+                    if old_idx in photo_cache:
+                        del photo_cache[old_idx]
+                    if old_idx in drawn_image_items:
+                        canvas_side.delete(drawn_image_items[old_idx])
+                        del drawn_image_items[old_idx]
+                    if old_idx in drawn_text_items:
+                        canvas_side.delete(drawn_text_items[old_idx])
+                        del drawn_text_items[old_idx]
+
+            # Tkinter PhotoImage erstellen **im Main-Thread**
+            photo = ImageTk.PhotoImage(pil_img)
+            photo_cache[idx] = photo
+            if idx in get_visible_indices():
+                draw_canvas_image(idx, photo)
+            result_queue.task_done()
+            processed += 1
+        return processed
+
+    # Click handling: map canvas coords to image index and pixel coordinates
+    def on_canvas_click(event):
+        x_c = canvas_side.canvasx(event.x)
+        y_c = canvas_side.canvasy(event.y)
+        # find clicked image by bounds
+        for idx, (x, y, scale, disp_w, disp_h) in enumerate(img_positions):
+            if x <= x_c <= x + disp_w and y <= y_c <= y + disp_h:
+                # compute original image coordinates (in pixel space of original)
+                local_x_scaled = (x_c - x)
+                local_y_scaled = (y_c - y)
+                x_orig = local_x_scaled / scale
+                y_orig = local_y_scaled / scale
+                handle_image_click(idx, x_orig, y_orig, x, y, scale)
+                break
+
+    # ----------------- Click-Handler -----------------
+    def handle_image_click(idx, x_orig, y_orig, x_canvas, y_canvas, scale):
+        # Marker löschen
+        for mid in marker_items:
+            canvas_side.delete(mid)
+        marker_items.clear()
+
+        # Marker für eigenes Bild
+        m_self = create_marker_canvas(x_canvas + x_orig * scale, y_canvas + y_orig * scale, color="red")
+        marker_items.append(m_self)
+
+        # Homography-Korrespondenzen
         pt = np.array([[x_orig], [y_orig], [1.0]])
-
-        # Marker for the clicked point
-        m_self = Label(lbl.master, bg="red")
-        m_self.place(in_=lbl, x=int(x_click), y=int(y_click), anchor=NW, width=6, height=6)
-        markers.append(m_self)
-
         comp = list(node_connected_component(idx))
         correspondences = [(idx, x_orig, y_orig)]
         for other in comp:
@@ -465,48 +641,55 @@ def main(algorithm = None):
                     break
             if not ok:
                 continue
-            lbl_c, scale_c, disp_w_c, disp_h_c = img_positions[other]
-            x_disp, y_disp = cur_pt[0, 0] * scale_c, cur_pt[1, 0] * scale_c
-            if 0 <= x_disp <= disp_w_c and 0 <= y_disp <= disp_h_c:
-                m = Label(lbl_c.master, bg="yellow")
-                m.place(in_=lbl_c, x=int(x_disp), y=int(y_disp), anchor=NW, width=6, height=6)
-                markers.append(m)
+            x_img, y_img, sc, disp_w, disp_h = img_positions[other]
+            x_disp, y_disp = cur_pt[0, 0] * sc, cur_pt[1, 0] * sc
+            if 0 <= x_disp <= disp_w and 0 <= y_disp <= disp_h:
+                mx = create_marker_canvas(x_img + x_disp, y_img + y_disp, color="yellow")
+                marker_items.append(mx)
                 correspondences.append((other, cur_pt[0, 0], cur_pt[1, 0]))
 
+        # avg_gps.main **im Main-Thread aufrufen**
         data = collect_correspondence_data(idx, x_orig, y_orig, correspondences)
-        avg_gps.main(data)
+        root.after(0, lambda d=data: safe_avg_gps_call(d))
 
-    for i, img in enumerate(images):
-        h, w = img.shape[:2]
-        scale = min(img_size / h, img_size / w)
-        disp_w, disp_h = int(w * scale), int(h * scale)
-        img_resized = cv2.resize(img, (disp_w, disp_h))
-        img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-        im_pil = Image.fromarray(img_rgb)
-        im_tk = ImageTk.PhotoImage(im_pil)
-        photo_refs_side.append(im_tk)
 
-        img_frame = Frame(frame, bd=1, relief="solid", bg="black")
-        img_frame.grid(row=i // cols, column=i % cols, padx=5, pady=5)
+    def safe_avg_gps_call(data):
+        try:
+            avg_gps.main(data)
+        except Exception as e:
+            print(f"avg_gps.main error: {e}")
 
-        lbl = Label(img_frame, image=im_tk)
-        lbl.pack()
-        img_name = os.path.splitext(os.path.basename(img_paths[i]))[0]
-        name_lbl = Label(img_frame, text=img_name, fg="white", bg="black", font=("Arial", 9))
-        name_lbl.pack(fill="x")
+    # Periodic UI update function
+    def periodic_update():
+        # 1) Enqueue visible indices and neighbors
+        enqueue_visible_and_neighbors()
+        # 2) Process result queue (create PhotoImages + draw)
+        processed = process_loader_results()
+        # 3) Make sure visible indices are drawn if we already have PhotoImage
+        vis = get_visible_indices()
+        for idx in vis:
+            with cache_lock:
+                if idx in photo_cache and idx not in drawn_image_items:
+                    draw_canvas_image(idx, photo_cache[idx])
+        # Schedule next call
+        root.after(100, periodic_update)
 
-        img_positions.append((lbl, scale, disp_w, disp_h))
-        lbl.bind("<Button-1>", lambda e, idx=i: click_event(e, idx))
+    # initial filling (enqueue a few)
+    enqueue_visible_and_neighbors()
+    canvas_side.bind("<Button-1>", on_canvas_click)
+    root.after(100, periodic_update)
 
-    canvas_side.update_idletasks()
-    canvas_side.config(scrollregion=canvas_side.bbox("all"))
-
-    root.mainloop()
-
+    # Run Tk mainloop; on close, stop threads cleanly
+    try:
+        root.mainloop()
+    finally:
+        stop_event.set()
+        # wait for loader threads to finish
+        for t in loader_threads:
+            t.join(timeout=0.5)
 
 if __name__ == "__main__":
-    # ----------------- Command-line arguments -----------------
-    parser = argparse.ArgumentParser(description="Image feature matcher")
+    parser = argparse.ArgumentParser(description="Image feature matcher with Canvas lazy gallery")
     parser.add_argument(
         "-a", "--algorithm",
         choices=["SIFT", "AKAZE", "ORB", "BRISK", "KAZE"],
@@ -516,4 +699,3 @@ if __name__ == "__main__":
     args = parser.parse_args()
     algorithm = args.algorithm.upper() if args.algorithm is not None else None
     main(algorithm)
-
