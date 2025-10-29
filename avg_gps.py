@@ -86,17 +86,18 @@ def filter_points_by_distance(data_array, max_distance=50.0, gps_type='drone'):
     return filtered
 
 # ----------------- Weighted average GPS -----------------
-def weighted_average_gps(data_array, z_thresh=2.0):
+def weighted_average_gps(data_array, z_thresh=2.0, max_distance_m=10.0):
     """
-    Compute weighted average GPS while ignoring statistical outliers.
-    Assumes data_array is already filtered by distance from first target GPS.
+    Compute weighted average GPS while ignoring outliers.
+    Removes points farther than max_distance_m meters from the first target GPS.
+    Outliers above z_thresh are also removed from the data_array itself.
     """
     if not data_array:
         return None, None
 
-    # Collect valid target points and scores
-    lats, lons, weights = [], [], []
-    for item in data_array:
+    # Collect valid target points and scores, and keep track of original indices
+    lats, lons, weights, indices = [], [], [], []
+    for idx, item in enumerate(data_array):
         target = item.get('target_gps')
         score = item.get('score', 0.0)
         if target is None or score <= 0:
@@ -107,6 +108,7 @@ def weighted_average_gps(data_array, z_thresh=2.0):
         lats.append(lat)
         lons.append(lon)
         weights.append(score)
+        indices.append(idx)
 
     if not lats:
         return None, None
@@ -114,6 +116,20 @@ def weighted_average_gps(data_array, z_thresh=2.0):
     lats = np.array(lats)
     lons = np.array(lons)
     weights = np.array(weights)
+    indices = np.array(indices)
+
+    # --- Remove points too far from first target GPS ---
+    ref_lat, ref_lon = lats[0], lons[0]
+    distances = np.array([haversine(ref_lat, ref_lon, la, lo) for la, lo in zip(lats, lons)])
+    mask_distance = distances <= max_distance_m
+    if not np.any(mask_distance):
+        return None, None  # if all points are too far, return None
+
+    # Keep only points within max distance
+    lats = lats[mask_distance]
+    lons = lons[mask_distance]
+    weights = weights[mask_distance]
+    indices = indices[mask_distance]
 
     # --- Compute initial weighted averages ---
     lat_avg = np.average(lats, weights=weights)
@@ -127,13 +143,19 @@ def weighted_average_gps(data_array, z_thresh=2.0):
     mask = ((np.abs(lats - lat_avg) <= z_thresh * lat_std) &
             (np.abs(lons - lon_avg) <= z_thresh * lon_std))
     if not np.any(mask):
-        return lat_avg, lon_avg  # fallback if all filtered out
+        # fallback if all filtered out
+        return lat_avg, lon_avg
+
+    # --- Remove outliers from original data array ---
+    to_keep_indices = indices[mask]
+    data_array[:] = [data_array[i] for i in to_keep_indices]
 
     # Final weighted average
     lat_avg = np.average(lats[mask], weights=weights[mask])
     lon_avg = np.average(lons[mask], weights=weights[mask])
 
     return lat_avg, lon_avg
+
 
 # ----------------- GUI to display thumbnails with points -----------------
 def show_images_with_points(points_data, max_thumb_size=150):
