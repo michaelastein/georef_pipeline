@@ -270,4 +270,4 @@ def main(data):
     plot_cad_map(target_gps=(avg_lat, avg_lon), points=data)
 
     # Show thumbnails of images with points
-    show_images_with_points(data)
+    #show_images_with_points(data)
