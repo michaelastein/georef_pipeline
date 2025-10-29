@@ -6,6 +6,7 @@ from PIL import Image, ImageTk, ImageDraw
 import cv2
 import os
 
+
 # ----------------- Haversine distance -----------------
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371000  # Earth radius in meters
@@ -158,26 +159,45 @@ def weighted_average_gps(data_array, z_thresh=2.0, max_distance_m=10.0):
 
 
 # ----------------- GUI to display thumbnails with points -----------------
-def show_images_with_points(points_data, max_thumb_size=150):
+
+def show_images_with_points(points_data, max_thumb_size=150, master=None):
+    """
+    Display images with marked points in a Tkinter window.
+    
+    points_data: list of dicts, each must have:
+        - 'image_path' (str)
+        - 'pixel_x', 'pixel_y' (float, optional)
+        - 'image_size' (tuple, optional)
+        - 'score' (float)
+    max_thumb_size: max width/height for thumbnails
+    master: existing Tk root or Toplevel parent
+    """
     valid_points = [p for p in points_data if p.get('score', 0) > 0 and p.get('image_path')]
     if not valid_points:
         print("No images with valid points to show.")
         return
 
-    root = tk.Tk()
-    root.title("Images with Points")
+    # Use existing master if given, otherwise create new Tk root
+    if master is None:
+        root = tk.Tk()
+        root.title("Images with Points")
+        created_root = True
+    else:
+        root = tk.Toplevel(master)
+        root.title("Images with Points")
+        created_root = False
 
+    # Canvas + scrollbar
     canvas = tk.Canvas(root, width=1100, height=600)
     scrollbar = tk.Scrollbar(root, orient="vertical", command=canvas.yview)
     canvas.configure(yscrollcommand=scrollbar.set)
-
     canvas.pack(side="left", fill="both", expand=True)
     scrollbar.pack(side="right", fill="y")
 
     frame = tk.Frame(canvas)
     canvas.create_window((0, 0), window=frame, anchor="nw")
 
-    photo_refs = []
+    photo_refs = []  # keep references to avoid garbage collection
     cols = 5
 
     for i, item in enumerate(valid_points):
@@ -195,18 +215,19 @@ def show_images_with_points(points_data, max_thumb_size=150):
         img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
         im_pil = Image.fromarray(img_rgb)
 
-        # Draw the point on the thumbnail
-        draw = ImageDraw.Draw(im_pil)
+        # Draw point if available
         if 'pixel_x' in item and 'pixel_y' in item and 'image_size' in item:
             orig_w, orig_h = item['image_size']
             px = item['pixel_x'] * (disp_w / orig_w)
             py = item['pixel_y'] * (disp_h / orig_h)
             radius = max(3, int(scale * 5))
+            draw = ImageDraw.Draw(im_pil)
             draw.ellipse([px - radius, py - radius, px + radius, py + radius], fill='red')
 
         im_tk = ImageTk.PhotoImage(im_pil)
         photo_refs.append(im_tk)
 
+        # Frame for image + label
         img_frame = tk.Frame(frame, bd=1, relief="solid")
         img_frame.grid(row=i // cols, column=i % cols, padx=5, pady=5)
 
@@ -217,7 +238,10 @@ def show_images_with_points(points_data, max_thumb_size=150):
 
     frame.update_idletasks()
     canvas.config(scrollregion=canvas.bbox("all"))
-    root.mainloop()
+
+    if created_root:
+        root.mainloop()
+
 
 # ----------------- Main pipeline -----------------
 def main(data):
