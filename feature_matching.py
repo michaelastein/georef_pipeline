@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 import piexif
-from tkinter import Tk, Canvas, Frame, Scrollbar, LEFT, RIGHT, Y, NW, simpledialog
+from tkinter import Tk, Canvas, Frame, Scrollbar, LEFT, RIGHT, Y, NW, simpledialog, Toplevel, Label
 from PIL import Image, ImageTk
 from tkinter.filedialog import askopenfilenames, askopenfilename
 import math
@@ -486,6 +486,30 @@ def main(algorithm=None, no_gui=False):
         except Exception as e:
             print(f"Unexpected error or dialog closed prematurely: {e}")
             return
+        
+        # --------- Visualize selected pixel ---------
+        try:
+            img = Image.open(single_path).convert("RGB")
+            draw = Image.new("RGB", img.size)
+            draw.paste(img)
+
+            # Optionally, draw a red circle at (x, y)
+            from PIL import ImageDraw
+            draw_img = ImageDraw.Draw(draw)
+            r = 5  # radius of marker
+            draw_img.ellipse((x-r, y-r, x+r, y+r), outline="red", width=2)
+
+            # Display in a Tkinter window
+            viz_win = Toplevel()
+            viz_win.title(f"Selected Pixel in {os.path.basename(single_path)}")
+            tk_img = ImageTk.PhotoImage(draw)
+            lbl = Label(viz_win, image=tk_img)
+            lbl.image = tk_img  # keep reference
+            lbl.pack()
+            viz_win.mainloop()
+
+        except Exception as e:
+            print(f"Error visualizing the selected pixel: {e}")
 
     
     else:
