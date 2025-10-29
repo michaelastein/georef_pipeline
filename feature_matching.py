@@ -410,7 +410,9 @@ def main(algorithm=None, no_gui=False):
     # No-GUI mode
     # ----------------- No-GUI mode -----------------
     if no_gui:
-        try:
+        root.deiconify()  # make sure Tk root exists
+        while True:
+            # Ask user to select one image from the same folder
             single_path = askopenfilename(
                 title="Select one image from the same folder",
                 initialdir=os.path.dirname(img_paths[0]),
@@ -418,34 +420,31 @@ def main(algorithm=None, no_gui=False):
             )
             if not single_path:
                 print("No image selected. Exiting.")
-                return
+                break  # exit the loop and program
 
             if os.path.dirname(single_path) != os.path.dirname(img_paths[0]):
-                print("Selected image is not from the same folder as the original images. Exiting.")
-                return
+                print("Selected image is not from the same folder. Try again.")
+                continue  # loop again
 
             if single_path not in img_paths:
-                print("Selected image was not in the originally selected batch. Exiting.")
-                return
+                print("Selected image was not in the originally selected batch. Try again.")
+                continue  # loop again
 
             idx = img_paths.index(single_path)
 
-            # ask for x and y coordinates
-            root.deiconify()
+            # Ask for X and Y coordinates
             x = simpledialog.askfloat("Input", f"Enter X pixel coordinate for {os.path.basename(single_path)}")
             y = simpledialog.askfloat("Input", f"Enter Y pixel coordinate for {os.path.basename(single_path)}")
-            root.destroy()
-
             if x is None or y is None:
                 print("No coordinates entered. Exiting.")
-                return
+                break  # exit the loop and program
 
             w, h = orig_sizes[idx]
             if not (0 <= x < w) or not (0 <= y < h):
-                print(f"Coordinates ({x}, {y}) are outside image bounds ({w}x{h}). Exiting.")
-                return
+                print(f"Coordinates ({x}, {y}) are outside image bounds ({w}x{h}). Try again.")
+                continue  # loop again
 
-            # compute correspondences
+            # Compute correspondences and call avg_gps
             pt = np.array([[x], [y], [1.0]])
             comp = list(node_connected_component(idx))
             correspondences = [(idx, x, y)]
@@ -483,33 +482,25 @@ def main(algorithm=None, no_gui=False):
             except Exception as e:
                 print(f"avg_gps.main error: {e}")
 
-        except Exception as e:
-            print(f"Unexpected error or dialog closed prematurely: {e}")
-            return
-        
-        # --------- Visualize selected pixel ---------
-        try:
-            img = Image.open(single_path).convert("RGB")
-            draw = Image.new("RGB", img.size)
-            draw.paste(img)
+            # Show pixel on image
+            try:
+                img = Image.open(single_path).convert("RGB")
+                draw = Image.new("RGB", img.size)
+                draw.paste(img)
+                from PIL import ImageDraw
+                draw_img = ImageDraw.Draw(draw)
+                r = 5
+                draw_img.ellipse((x-r, y-r, x+r, y+r), outline="red", width=2)
+                viz_win = Toplevel()
+                viz_win.title(f"Selected Pixel in {os.path.basename(single_path)}")
+                tk_img = ImageTk.PhotoImage(draw)
+                lbl = Label(viz_win, image=tk_img)
+                lbl.image = tk_img
+                lbl.pack()
+                viz_win.mainloop()
+            except Exception as e:
+                print(f"Error visualizing the selected pixel: {e}")
 
-            # Optionally, draw a red circle at (x, y)
-            from PIL import ImageDraw
-            draw_img = ImageDraw.Draw(draw)
-            r = 5  # radius of marker
-            draw_img.ellipse((x-r, y-r, x+r, y+r), outline="red", width=2)
-
-            # Display in a Tkinter window
-            viz_win = Toplevel()
-            viz_win.title(f"Selected Pixel in {os.path.basename(single_path)}")
-            tk_img = ImageTk.PhotoImage(draw)
-            lbl = Label(viz_win, image=tk_img)
-            lbl.image = tk_img  # keep reference
-            lbl.pack()
-            viz_win.mainloop()
-
-        except Exception as e:
-            print(f"Error visualizing the selected pixel: {e}")
 
     
     else:
