@@ -62,16 +62,15 @@ def filter_images_by_distance(data_array, max_distance=50.0):
     return filtered
 
 # ----------------- Weighted average GPS -----------------
-def weighted_average_gps(data_array, z_thresh=2.0, max_distance_m=15.0):
+def weighted_average_gps(data_array, z_thresh=2.0, max_distance_m=10.0):
     """
-    Compute weighted average GPS while ignoring single outliers.
-    Also removes points farther than max_distance_m meters from the first target GPS.
-    z_thresh: number of weighted std deviations to consider as outlier.
+    Compute weighted average GPS while ignoring outliers.
+    Removes points farther than max_distance_m meters from the first target GPS. (using the georeferenced GPS)
     """
     if not data_array:
         return None, None
 
-    # Collect valid target points and weights
+    # Collect valid target points and scores
     lats, lons, weights = [], [], []
     for item in data_array:
         target = item.get('target_gps')
@@ -97,9 +96,12 @@ def weighted_average_gps(data_array, z_thresh=2.0, max_distance_m=15.0):
     distances = np.array([haversine(ref_lat, ref_lon, la, lo) for la, lo in zip(lats, lons)])
     mask_distance = distances <= max_distance_m
     if not np.any(mask_distance):
-        return ref_lat, ref_lon  # fallback if all points too far
+        return None, None  # if all points are too far, return None
 
-    lats, lons, weights = lats[mask_distance], lons[mask_distance], weights[mask_distance]
+    # Keep only points within max distance
+    lats = lats[mask_distance]
+    lons = lons[mask_distance]
+    weights = weights[mask_distance]
 
     # --- Compute initial weighted averages ---
     lat_avg = np.average(lats, weights=weights)
@@ -115,6 +117,7 @@ def weighted_average_gps(data_array, z_thresh=2.0, max_distance_m=15.0):
     if not np.any(mask):
         return lat_avg, lon_avg  # fallback if all filtered out
 
+    # Final weighted average
     lat_avg = np.average(lats[mask], weights=weights[mask])
     lon_avg = np.average(lons[mask], weights=weights[mask])
 
