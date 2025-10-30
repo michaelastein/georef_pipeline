@@ -1,8 +1,8 @@
 import cv2
 import numpy as np
 import piexif
-from tkinter import Tk, Canvas, Frame, Scrollbar, LEFT, RIGHT, Y, NW, simpledialog, Toplevel, Label
-from PIL import Image, ImageTk
+from tkinter import Tk, Canvas, Scrollbar, LEFT, RIGHT, Y, NW, Toplevel, Label, Entry, Button, Checkbutton, BooleanVar
+from PIL import Image, ImageTk, ImageDraw
 from tkinter.filedialog import askopenfilenames, askopenfilename
 import math
 import time
@@ -13,6 +13,7 @@ import argparse
 import avg_gps
 import queue
 from collections import OrderedDict
+import matching_anomalies
 
 
 def main(algorithm=None, no_gui=False):
@@ -409,8 +410,11 @@ def main(algorithm=None, no_gui=False):
     
     # No-GUI mode
     # ----------------- No-GUI mode -----------------
+        # ----------------- No-GUI mode -----------------
     if no_gui:
-        try:
+        root.deiconify()  # make sure Tk root exists
+        while True:
+            # Ask user to select one image from the same folder
             single_path = askopenfilename(
                 title="Select one image from the same folder",
                 initialdir=os.path.dirname(img_paths[0]),
@@ -418,98 +422,117 @@ def main(algorithm=None, no_gui=False):
             )
             if not single_path:
                 print("No image selected. Exiting.")
-                return
+                break  # exit the loop and program
 
             if os.path.dirname(single_path) != os.path.dirname(img_paths[0]):
-                print("Selected image is not from the same folder as the original images. Exiting.")
-                return
+                print("Selected image is not from the same folder. Try again.")
+                continue  # loop again
 
             if single_path not in img_paths:
-                print("Selected image was not in the originally selected batch. Exiting.")
-                return
+                print("Selected image was not in the originally selected batch. Try again.")
+                continue  # loop again
 
             idx = img_paths.index(single_path)
-
-            # ask for x and y coordinates
-            root.deiconify()
-            x = simpledialog.askfloat("Input", f"Enter X pixel coordinate for {os.path.basename(single_path)}")
-            y = simpledialog.askfloat("Input", f"Enter Y pixel coordinate for {os.path.basename(single_path)}")
-            root.destroy()
-
-            if x is None or y is None:
-                print("No coordinates entered. Exiting.")
-                return
-
             w, h = orig_sizes[idx]
-            if not (0 <= x < w) or not (0 <= y < h):
-                print(f"Coordinates ({x}, {y}) are outside image bounds ({w}x{h}). Exiting.")
-                return
 
-            # compute correspondences
-            pt = np.array([[x], [y], [1.0]])
-            comp = list(node_connected_component(idx))
-            correspondences = [(idx, x, y)]
-            for other in comp:
-                if other == idx:
-                    continue
-                path = shortest_path(idx, other)
-                if path is None:
-                    continue
-                cur_pt = pt.copy()
-                ok = True
-                for k in range(len(path) - 1):
-                    a = path[k]
-                    b = path[k + 1]
-                    H = H_dict.get((a, b))
-                    if H is None:
-                        ok = False
-                        break
-                    try:
-                        cur_pt = H @ cur_pt
-                        if abs(cur_pt[2, 0]) < 1e-8:
-                            ok = False
-                            break
-                        cur_pt = cur_pt / cur_pt[2, 0]
-                    except Exception:
-                        ok = False
-                        break
-                if not ok:
-                    continue
-                correspondences.append((other, cur_pt[0, 0], cur_pt[1, 0]))
+            # Create input window
+            win = Toplevel(root)
+            win.title(f"Select Pixel in {os.path.basename(single_path)}")
 
-            data = collect_correspondence_data(idx, x, y, correspondences)
-            try:
-                avg_gps.main(data)
-            except Exception as e:
-                print(f"avg_gps.main error: {e}")
-
-        except Exception as e:
-            print(f"Unexpected error or dialog closed prematurely: {e}")
-            return
-        
-        # --------- Visualize selected pixel ---------
-        try:
             img = Image.open(single_path).convert("RGB")
             draw = Image.new("RGB", img.size)
             draw.paste(img)
-
-            # Optionally, draw a red circle at (x, y)
-            from PIL import ImageDraw
-            draw_img = ImageDraw.Draw(draw)
-            r = 5  # radius of marker
-            draw_img.ellipse((x-r, y-r, x+r, y+r), outline="red", width=2)
-
-            # Display in a Tkinter window
-            viz_win = Toplevel()
-            viz_win.title(f"Selected Pixel in {os.path.basename(single_path)}")
             tk_img = ImageTk.PhotoImage(draw)
-            lbl = Label(viz_win, image=tk_img)
-            lbl.image = tk_img  # keep reference
-            lbl.pack()
-            viz_win.mainloop()
+            lbl_img = Label(win, image=tk_img)
+            lbl_img.grid(row=0, column=0, columnspan=2)
 
-        except Exception as e:
-            print(f"Error visualizing the selected pixel: {e}")
+            Label(win, text="X:").grid(row=1, column=0)
+            entry_x = Entry(win)
+            entry_x.grid(row=1, column=1)
+
+            Label(win, text="Y:").grid(row=2, column=0)
+            entry_y = Entry(win)
+            entry_y.grid(row=2, column=1)
+
+            match_var = BooleanVar()
+            Checkbutton(win, text="Match Anomalies", variable=match_var).grid(row=3, column=0, columnspan=2)
+
+            def on_submit():
+                try:
+                    x = float(entry_x.get())
+                    y = float(entry_y.get())
+                except ValueError:
+                    print("Invalid coordinates.")
+                    return
+
+                if not (0 <= x < w) or not (0 <= y < h):
+                    print(f"Coordinates ({x}, {y}) are outside image bounds ({w}x{h}). Try again.")
+                    return
+
+                # Compute correspondences
+                pt = np.array([[x], [y], [1.0]])
+                comp = list(node_connected_component(idx))
+                correspondences = [(idx, x, y)]
+                for other in comp:
+                    if other == idx:
+                        continue
+                    path = shortest_path(idx, other)
+                    if path is None:
+                        continue
+                    cur_pt = pt.copy()
+                    ok = True
+                    for k in range(len(path) - 1):
+                        a = path[k]
+                        b = path[k + 1]
+                        H = H_dict.get((a, b))
+                        if H is None:
+                            ok = False
+                            break
+                        try:
+                            cur_pt = H @ cur_pt
+                            if abs(cur_pt[2, 0]) < 1e-8:
+                                ok = False
+                                break
+                            cur_pt = cur_pt / cur_pt[2, 0]
+                        except Exception:
+                            ok = False
+                            break
+                    if not ok:
+                        continue
+                    correspondences.append((other, cur_pt[0, 0], cur_pt[1, 0]))
+
+                data = collect_correspondence_data(idx, x, y, correspondences)
+
+                # Always run avg_gps
+                try:
+                    avg_gps.main(data)
+                except Exception as e:
+                    print(f"avg_gps.main error: {e}")
+
+                # Optionally run matching_anomalies
+                if match_var.get():
+                    try:
+                        matching_anomalies.main(data)
+                    except Exception as e:
+                        print(f"matching_anomalies.main error: {e}")
+
+                # Show the selected pixel
+                try:
+                    draw_img = ImageDraw.Draw(draw)
+                    r = 5
+                    draw_img.ellipse((x-r, y-r, x+r, y+r), outline="red", width=2)
+                    new_tk_img = ImageTk.PhotoImage(draw)
+                    lbl_img.configure(image=new_tk_img)
+                    lbl_img.image = new_tk_img
+                except Exception as e:
+                    print(f"Error visualizing the selected pixel: {e}")
+
+                win.destroy()  # close window and continue loop
+
+            Button(win, text="Submit", command=on_submit).grid(row=4, column=0, columnspan=2, pady=5)
+
+            win.grab_set()
+            win.wait_window()  # wait until this window is closed before continuing loop
 
     
     else:
