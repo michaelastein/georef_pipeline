@@ -39,11 +39,11 @@ def compute_image_scores(data_array):
 def filter_points_by_distance(data_array, max_distance=50.0, gps_type='drone'):
     """
     Filter points based on distance from the first point.
-    
+
     Parameters:
         data_array: list of dicts with GPS info
         max_distance: maximum allowed distance in meters
-        gps_type: 'drone' (uses gps_lat/gps_lon) or 'target' (uses target_gps)
+        gps_type: 'drone' (uses gps) or 'target' (uses target_gps)
     
     Returns:
         filtered list of points
@@ -54,8 +54,8 @@ def filter_points_by_distance(data_array, max_distance=50.0, gps_type='drone'):
     # Determine reference GPS
     ref_point = None
     for item in data_array:
-        if gps_type == 'drone' and item.get('gps_lat') is not None and item.get('gps_lon') is not None:
-            ref_point = (item['gps_lat'], item['gps_lon'])
+        if gps_type == 'drone' and item.get('gps') is not None:
+            ref_point = item['gps'][:2]  # lat, lon
             break
         elif gps_type == 'target' and item.get('target_gps') is not None:
             ref_point = item['target_gps']
@@ -69,16 +69,15 @@ def filter_points_by_distance(data_array, max_distance=50.0, gps_type='drone'):
     filtered = []
     for item in data_array:
         if gps_type == 'drone':
-            lat = item.get('gps_lat')
-            lon = item.get('gps_lon')
+            gps = item.get('gps')
+            if gps is None:
+                continue
+            lat, lon = gps[:2]
         else:  # target
             tgt = item.get('target_gps')
             if tgt is None:
                 continue
             lat, lon = tgt
-
-        if lat is None or lon is None:
-            continue
 
         distance = haversine(ref_lat, ref_lon, lat, lon)
         if distance <= max_distance:
@@ -103,7 +102,7 @@ def weighted_average_gps(data_array, z_thresh=2.0, max_distance_m=10.0):
         score = item.get('score', 0.0)
         if target is None or score <= 0:
             continue
-        lat, lon = target
+        lat, lon = target[:2]  # just in case target_gps is a tuple with more than 2 values
         if lat is None or lon is None:
             continue
         lats.append(lat)
@@ -156,6 +155,7 @@ def weighted_average_gps(data_array, z_thresh=2.0, max_distance_m=10.0):
     lon_avg = np.average(lons[mask], weights=weights[mask])
 
     return lat_avg, lon_avg
+
 
 
 # ----------------- GUI to display thumbnails with points -----------------
@@ -267,7 +267,7 @@ def main(data):
         return
 
     # Visualize on CAD map directly using data
-    plot_cad_map(target_gps=(avg_lat, avg_lon), points=data)
+    #plot_cad_map(target_gps=(avg_lat, avg_lon), points=data)
 
     # Show thumbnails of images with points
     #show_images_with_points(data)

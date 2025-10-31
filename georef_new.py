@@ -6,8 +6,9 @@ from tkinter import filedialog
 import sys
 import os
 from PIL import Image, ImageTk
-import piexif
 import pyproj
+import csv
+from pathlib import Path
 from plot_maps import plot_google_maps
 from plot_cad import plot_cad_map  # optional
 
@@ -19,143 +20,82 @@ PANEL_HEIGHT_CORRECTION = 0.0
 
 # ---------------- Utility Functions ----------------
 
-def rational_to_float(r):
-    """
-    Convert a rational number (tuple/list) to float.
-    If input is not a tuple/list, try converting directly to float.
-    Example: (3, 2) -> 1.5
-    """
-    try:
-        return r[0] / r[1]
-    except Exception:
-        return float(r)
+def extract_metadata_from_csv(img_paths):
+    """Extract GPS and orientation metadata from CSV, mapped to image filenames."""
+    folder = Path(img_paths[0]).parent
+    csv_files = list(folder.glob("*.csv"))
+    
+    if len(csv_files) != 1:
+        from tkinter.filedialog import askopenfilename
+        csv_path = askopenfilename(title="Select CSV file", filetypes=[("CSV files", "*.csv")])
+        if not csv_path:
+            raise FileNotFoundError("No CSV file selected")
+    else:
+        csv_path = str(csv_files[0])
+    
+    print(f"Using CSV file: {csv_path}")
+    
+    metadata_dict = {}
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            img_file = row.get("wiris_image", "").strip()
+            if not img_file:
+                continue
+            metadata_dict[img_file] = {
+                "lat": float(row.get("Latitude", "nan")),
+                "lon": float(row.get("Longitude", "nan")),
+                "alt": float(row.get("alt", "nan")),
+                "yaw": float(row.get("GimbalYawE", "nan")),
+                "pitch": float(row.get("pitch_agisoft", "nan")),
+                "roll": float(row.get("roll", "nan")),
+                "rel_alt": float(row.get("CHeight", "nan"))
+            }
 
-def gps_to_decimal(coord, ref):
-    """
-    Convert GPS coordinates from DMS (degrees, minutes, seconds) to decimal degrees.
-    `coord` is a list/tuple of rationals: [deg, min, sec]
-    `ref` is 'N','S','E','W' indicating hemisphere
-    """
-    deg = rational_to_float(coord[0])
-    minute = rational_to_float(coord[1])
-    sec = rational_to_float(coord[2])
-    val = deg + minute / 60.0 + sec / 3600.0
-
-    # Handle byte strings for reference
-    if isinstance(ref, bytes):
-        ref = ref.decode(errors='ignore')
-
-    # Convert to negative for South or West
-    if ref in ['S', 's', 'W', 'w']:
-        val = -val
-    return val
-
-def parse_description_from_exif(exif_dict):
-    """
-    Parse yaw, pitch, roll, and relative altitude from EXIF ImageDescription field.
-    Expected format: "yaw=..., pitch=..., roll=..., rel_alt=..."
-    Returns (yaw, pitch, roll, rel_alt)
-    Raises ValueError if yaw/pitch/roll are missing.
-    """
-    desc = exif_dict.get('0th', {}).get(piexif.ImageIFD.ImageDescription, b'')
-    if isinstance(desc, bytes):
-        desc = desc.decode(errors='ignore')
-
-    yaw = pitch = roll = rel_alt = None
-
-    if desc:
-        for part in str(desc).split(","):
-            kv = part.strip().split("=")
-            if len(kv) == 2:
-                key, value = kv
-                key_lower = key.strip().lower()
-                try:
-                    if key_lower == "yaw":
-                        yaw = float(value)
-                    elif key_lower == "pitch":
-                        pitch = float(value)
-                    elif key_lower == "roll":
-                        roll = float(value)
-                    elif key_lower in ["relativealt", "rel_alt"]:
-                        rel_alt = float(value)
-                except ValueError:
-                    pass  # Ignore non-numeric values
-
-    if yaw is None or pitch is None or roll is None:
-        raise ValueError("Missing yaw, pitch, or roll in image description.")
-    return yaw, pitch, roll, rel_alt
-
-def extract_gps_from_exif(exif_dict):
-    """
-    Extract GPS latitude, longitude, and altitude from EXIF GPS fields.
-    Converts latitude/longitude to decimal degrees and altitude to float,
-    adjusting for altitude reference if needed.
-    """
-    gps_ifd = exif_dict.get("GPS", {})
-
-    # Extract GPS tags
-    lat_tag = gps_ifd.get(piexif.GPSIFD.GPSLatitude)
-    lat_ref = gps_ifd.get(piexif.GPSIFD.GPSLatitudeRef)
-    lon_tag = gps_ifd.get(piexif.GPSIFD.GPSLongitude)
-    lon_ref = gps_ifd.get(piexif.GPSIFD.GPSLongitudeRef)
-    alt_tag = gps_ifd.get(piexif.GPSIFD.GPSAltitude)
-    alt_ref = gps_ifd.get(piexif.GPSIFD.GPSAltitudeRef, 0)
-
-    if not (lat_tag and lat_ref and lon_tag and lon_ref and alt_tag is not None):
-        raise ValueError("Missing GPS fields in EXIF.")
-
-    lat = gps_to_decimal(lat_tag, lat_ref)
-    lon = gps_to_decimal(lon_tag, lon_ref)
-    alt = rational_to_float(alt_tag)
-
-    # Adjust for altitude reference (0 = above sea level, 1 = below sea level)
-    alt_ref_val = int(alt_ref[0]) if isinstance(alt_ref, (bytes, bytearray)) else int(alt_ref)
-    if alt_ref_val == 1:
-        alt = -alt
-
-    return lat, lon, alt
+    data_entries = []
+    for idx, path in enumerate(img_paths):
+        fname = os.path.basename(path)
+        meta = metadata_dict.get(fname)
+        width, height = Image.open(path).size
+        if meta:
+            gps_tuple = (meta["lat"], meta["lon"], meta["alt"], meta["rel_alt"])
+            angles = (meta["yaw"], meta["pitch"], meta["roll"])
+        else:
+            print(f"Warning: No CSV metadata for {fname}")
+            gps_tuple = (None, None, None, None)
+            angles = (None, None, None)
+        data_entries.append({
+            "image_index": idx,
+            "image_path": path,
+            "pixel_x": width / 2,
+            "pixel_y": height / 2,
+            "gps": gps_tuple,
+            "yaw": angles[0],
+            "pitch": angles[1],
+            "roll": angles[2],
+            "image_size": (width, height)
+        })
+    return data_entries
 
 def enu_to_gps(x, y, origin_lat, origin_lon):
-    """
-    Convert local ENU (East-North-Up) coordinates to GPS latitude and longitude.
-    `x`, `y` are offsets in meters from origin.
-    Uses UTM projection based on origin latitude/longitude.
-    """
-    # Determine UTM zone
     zone = int((origin_lon + 180)/6)+1
     epsg_code = 32600 + zone if origin_lat >= 0 else 32700 + zone
     utm_crs = pyproj.CRS.from_epsg(epsg_code)
 
-    # Transformer to/from UTM
     t_to_utm = pyproj.Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True)
     t_from_utm = pyproj.Transformer.from_crs(utm_crs, "EPSG:4326", always_xy=True)
 
-    # Convert origin to UTM
     utm_x0, utm_y0 = t_to_utm.transform(origin_lon, origin_lat)
-
-    # Apply ENU offsets
     utm_x = utm_x0 + x
     utm_y = utm_y0 + y
 
-    # Convert back to GPS
     lon, lat = t_from_utm.transform(utm_x, utm_y)
     return lat, lon
 
 def pixel_to_camproject(u, v, width, height):
-    """
-    Convert image pixel coordinates to camera project coordinates.
-    Essentially flips the u-coordinate horizontally.
-    """
     return np.array([width - 1 - u, height - 1 - v])
 
-# ---------------- GUI Helpers ----------------
-
 def load_image_dialog():
-    """
-    Open a file dialog to select an image.
-    Returns the PIL image and file path.
-    Exits program if no image is selected.
-    """
     root = tk.Tk()
     root.withdraw()
     file_path = filedialog.askopenfilename(
@@ -170,48 +110,33 @@ def load_image_dialog():
     return img, file_path
 
 def select_pixel_gui(img_array):
-    """
-    Display an OpenCV window to allow the user to click on a target pixel.
-    Returns the selected pixel coordinates (u, v).
-    Defaults to center if user skips.
-    """
     clicked_point = {}
-
     def click_event(event, x, y, flags, param):
         if event == cv2.EVENT_LBUTTONDOWN:
             clicked_point['u'] = x
             clicked_point['v'] = y
             cv2.destroyAllWindows()
-
     cv2.imshow("Click on target pixel (press ESC to skip)", img_array)
     cv2.setMouseCallback("Click on target pixel (press ESC to skip)", click_event)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
-
-    # Default to image center if no click
     width, height = img_array.shape[1], img_array.shape[0]
     u = clicked_point.get('u', width // 2)
     v = clicked_point.get('v', height // 2)
     return u, v
 
 def show_image_with_buttons(img_array, u, v, filename):
-    """
-    Display an image in a Tkinter window with the selected pixel marked.
-    Provides buttons to rotate the image left or right.
-    """
     img_with_dot = img_array.copy()
-    cv2.circle(img_with_dot, (u, v), radius=5, color=(0, 0, 255), thickness=-1)  # mark pixel
+    cv2.circle(img_with_dot, (u, v), radius=5, color=(0, 0, 255), thickness=-1)
     pil_img = Image.fromarray(cv2.cvtColor(img_with_dot, cv2.COLOR_BGR2RGB))
 
     root = tk.Tk()
     root.title(os.path.basename(filename))
-
     state = {"img": pil_img}
     canvas = tk.Label(root)
     canvas.pack()
 
     def update_image():
-        """Update Tkinter label with current PIL image."""
         tk_img = ImageTk.PhotoImage(state["img"], master=root)
         canvas.configure(image=tk_img)
         canvas.image = tk_img
@@ -225,18 +150,14 @@ def show_image_with_buttons(img_array, u, v, filename):
         update_image()
 
     def on_close():
-        """Close window and exit program."""
         root.destroy()
         sys.exit(0)
 
     root.protocol("WM_DELETE_WINDOW", on_close)
-
-    # Buttons frame
     btn_frame = tk.Frame(root)
     btn_frame.pack(pady=10)
     tk.Button(btn_frame, text="⟲ Rotate Left", command=rotate_left).pack(side=tk.LEFT, padx=5)
     tk.Button(btn_frame, text="⟳ Rotate Right", command=rotate_right).pack(side=tk.LEFT, padx=5)
-
     update_image()
     root.mainloop()
 
@@ -249,10 +170,9 @@ class DroneMapper:
         self.DRONE_OFFSET_UP = drone_offset_up
         self.PANEL_HEIGHT_CORRECTION = panel_height
 
-    def get_target_gps(self, u, v, exif_gps, exif_angles, image_size):
-        """Return target GPS coordinates given a single pixel, EXIF GPS, and angles"""
-        drone_lat, drone_lon, drone_alt = exif_gps
-        yaw, pitch, roll = exif_angles
+    def get_target_gps(self, u, v, gps, angles, image_size):
+        drone_lat, drone_lon, drone_alt, rel_alt = gps
+        yaw, pitch, roll = angles
         width, height = image_size
 
         cam = Camera()
@@ -262,7 +182,7 @@ class DroneMapper:
         cam.intrinsics(width, height, f_px, cx, cy)
 
         ext = Extrinsics()
-        corrected_altitude = drone_alt - self.PANEL_HEIGHT_CORRECTION + self.DRONE_OFFSET_UP
+        corrected_altitude = rel_alt - self.PANEL_HEIGHT_CORRECTION + self.DRONE_OFFSET_UP
         ext.setPose(
             X=self.DRONE_OFFSET_EAST,
             Y=self.DRONE_OFFSET_NORTH,
@@ -282,76 +202,77 @@ class DroneMapper:
 
     def get_target_gps_array(self, data_array):
         """
-        Append target GPS to each item in data_array in place.
-        Works with the structure returned by collect_correspondence_data.
-        Each item should have:
-            - pixel_x, pixel_y
-            - gps_lat, gps_lon, gps_alt
-            - yaw, pitch, roll
-            - image_path
+        Returns a list of dicts with 'target_gps' added.
         """
-        for item in data_array:
-            u, v = item['pixel_x'], item['pixel_y']
-            exif_gps = (item['gps_lat'], item['gps_lon'], item['gps_alt'])
-            exif_angles = (item['yaw'], item['pitch'], item['roll'])
-            image_size = item.get('image_size', None)  # get image size from entry
+        for data in data_array:
+            u = data.get('pixel_x', data['image_size'][0] / 2)
+            v = data.get('pixel_y', data['image_size'][1] / 2)
+            yaw, pitch, roll = data['yaw'], data['pitch'], data['roll']
 
-            # Compute target GPS for this single point
-            item['target_gps'] = self.get_target_gps(u, v, exif_gps, exif_angles, image_size=image_size)
-
+            target_lat, target_lon = self.get_target_gps(
+                u, v, gps=data['gps'], angles=(yaw, pitch, roll), image_size=data['image_size']
+            )
+            data['target_gps'] = (target_lat, target_lon)
         return data_array
 
+    def process_images_gui(self, img_paths):
+        data_array = extract_metadata_from_csv(img_paths)
 
-    def process_image_gui(self):
-        """Full CLI workflow with GUI"""
-        img, file_path = load_image_dialog()
-        width, height = img.size
+        for entry in data_array:
+            # Load image
+            img = Image.open(entry['image_path'])
+            img_array = np.array(img)
+            if img_array.dtype == np.uint16:
+                img_array = (img_array / 256).astype(np.uint8)
+            if len(img_array.shape) == 2:
+                img_array = cv2.cvtColor(img_array, cv2.COLOR_GRAY2BGR)
+            else:
+                img_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
 
-        try:
-            exif_dict = piexif.load(img.info['exif']) if 'exif' in img.info else piexif.load(file_path)
-        except Exception:
-            exif_dict = piexif.load(file_path)
+            # Select pixel
+            u, v = select_pixel_gui(img_array)
+            entry['pixel_x'] = u
+            entry['pixel_y'] = v
 
-        yaw, pitch, roll, rel_alt = parse_description_from_exif(exif_dict)
-        drone_lat, drone_lon, drone_alt = extract_gps_from_exif(exif_dict)
+        # Compute target GPS for all images
+        data_array = self.get_target_gps_array(data_array)
 
-        print("Drone GPS:", drone_lat, drone_lon, drone_alt)
-        print("Yaw/Pitch/Roll from EXIF:", yaw, pitch, roll)
-        print("Relative altitude:", rel_alt)
+        # Plot and show
+        # Inside DroneMapper.process_images_gui after computing target GPS
+        for entry in data_array:
 
-        img_array = np.array(img)
-        if img_array.dtype == np.uint16:
-            img_array = (img_array / 256).astype(np.uint8)
-        if len(img_array.shape) == 2:
-            img_array = cv2.cvtColor(img_array, cv2.COLOR_GRAY2BGR)
-        else:
-            img_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
 
-        u, v = select_pixel_gui(img_array)
+            # Schedule Google Maps plot in main thread
+            root.after(0, lambda e=entry: plot_google_maps(
+                target_gps=e['target_gps'],
+                corner_gps=None,
+                drone_gps=(e['gps'][0] + self.DRONE_OFFSET_NORTH,
+                        e['gps'][1] + self.DRONE_OFFSET_EAST)
+            ))
 
-        target_lat, target_lon = self.get_target_gps(
-            u, v, exif_gps=(drone_lat, drone_lon, rel_alt),
-            exif_angles=(yaw, pitch, roll),
-            image_size=(width, height)
-        )
+            # Schedule CAD map plot in main thread
+            root.after(0, lambda e=entry: plot_cad_map(
+                target_gps=e['target_gps'],
+                corner_gps=None,
+                drone_gps=(e['gps'][0] + self.DRONE_OFFSET_NORTH,
+                        e['gps'][1] + self.DRONE_OFFSET_EAST)
+            ))
 
-        # Optionally plot maps
-        plot_google_maps(
-            target_gps=(target_lat, target_lon),
-            corner_gps=None,
-            drone_gps=(drone_lat + self.DRONE_OFFSET_NORTH, drone_lon + self.DRONE_OFFSET_EAST)
-        )
-        plot_cad_map(
-            target_gps=(target_lat, target_lon),
-            corner_gps=None,
-            drone_gps=(drone_lat + self.DRONE_OFFSET_NORTH, drone_lon + self.DRONE_OFFSET_EAST)
-        )
 
-        # Show GUI
-        show_image_with_buttons(img_array, u, v, filename=file_path)
-        return target_lat, target_lon
+            show_image_with_buttons(img_array, u, v, filename=entry['image_path'])
+
 
 # ---------------- CLI ----------------
 if __name__ == "__main__":
+    root = tk.Tk()
+    root.withdraw()
+    img_paths = filedialog.askopenfilenames(
+        title="Select images",
+        filetypes=[("Image files", "*.jpg *.jpeg *.png *.tif *.tiff *.bmp"), ("All files", "*.*")]
+    )
+    if not img_paths:
+        print("No images selected. Exiting.")
+        sys.exit(0)
+    
     mapper = DroneMapper()
-    mapper.process_image_gui()
+    mapper.process_images_gui(img_paths)

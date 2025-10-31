@@ -1,14 +1,8 @@
-__pycache__/avg_gps.cpython-311.pyc
-__pycache__/avg_gps.cpython-311.pyc
-__pycache__/plot_cad.cpython-311.pyc
-__pycache__/plot_maps.cpython-311.pyc
-target_map_cad.html
-__pycache__/avg_gps.cpython-311.pyc
-target_map_cad.html
-__pycache__/avg_gps.cpython-311.pyc
-__pycache__/georef_new.cpython-311.pyc
-__pycache__/plot_cad.cpython-311.pyc
-__pycache__/plot_maps.cpython-311.pyc
-__pycache__/plot_cad.cpython-311.pyc
-__pycache__/plot_maps.cpython-311.pyc
-__pycache__/georef_new.cpython-311.pyc
+# Ignore compiled Python files
+*.pyc
+__pycache__/
+
+# Ignore HTML files
+*.html
+*.geojson
+*.tif
