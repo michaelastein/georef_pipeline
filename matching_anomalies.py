@@ -1,19 +1,22 @@
-
-
 import os
 import traceback
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk, ImageDraw
 import pandas as pd
+import cv2
 
 # ==== Configuration ====
-MAX_DEVIATION_FRACTION = 1 / 3.0
-THUMBNAIL_MAX_SIZE = (600, 400)
-GRID_COLUMNS = 3
+MAX_DEVIATION_FRACTION = 1 / 2.0  # Fraction of bounding box size allowed for deviation when matching
+GRID_COLUMNS = 4  # Number of columns in the displayed image grid
+THUMBNAIL_MAX_SIZE = 200  # Maximum size (pixels) for thumbnail display
 
-# ==== Helpers ====
+images_refs = []
+
+# ==== Helpers ====  
+
 def ask_csv_file():
+    """Open a file dialog to select a CSV file and return its path."""
     root = tk.Tk()
     root.withdraw()
     path = filedialog.askopenfilename(
@@ -24,26 +27,37 @@ def ask_csv_file():
     return path
 
 def safe_float(x):
+    """Convert input to float safely; return None on failure."""
     try:
         return float(x)
     except Exception:
         return None
 
 def find_exact_row_for_first_image(df, filename_col, filename, pixel_x, pixel_y):
+    """
+    Find the row in the DataFrame matching the given filename and pixel coordinates
+    within a tolerance.
+    """
     candidate_rows = df[df[filename_col].astype(str).str.strip() == filename]
     if candidate_rows.empty:
         return None
-    tol = 1e-3
+
+    tol = 20  # pixel tolerance
     for _, r in candidate_rows.iterrows():
         cx = safe_float(r.get("center_x"))
         cy = safe_float(r.get("center_y"))
         if cx is None or cy is None:
             continue
+        # check if the center coordinates are close enough
         if abs(cx - pixel_x) <= tol and abs(cy - pixel_y) <= tol:
             return r
     return None
 
 def compute_max_deviation_from_bbox(row, fraction=MAX_DEVIATION_FRACTION):
+    """
+    Compute the maximum allowed deviation from the bounding box for matching.
+    If bbox is invalid, return a default value of 10.
+    """
     xmin = safe_float(row.get("xmin"))
     xmax = safe_float(row.get("xmax"))
     ymin = safe_float(row.get("ymin"))
@@ -55,13 +69,19 @@ def compute_max_deviation_from_bbox(row, fraction=MAX_DEVIATION_FRACTION):
     return max(w, h) * fraction if max(w, h) > 0 else 10.0
 
 def get_matching_rows_for_image(df, image_name, max_dev, filename_col, data_by_name):
+    """
+    Find rows in the DataFrame that match the given image name and are within
+    the allowed deviation from the target coordinates.
+    """
     matches = []
     if filename_col not in df.columns:
         return matches
+
     candidate_rows = df[df[filename_col].astype(str).str.strip() == image_name]
     if candidate_rows.empty:
         return matches
-    # identify center columns
+
+    # Identify center coordinate columns
     cx_col = None
     cy_col = None
     for c in df.columns:
@@ -71,18 +91,25 @@ def get_matching_rows_for_image(df, image_name, max_dev, filename_col, data_by_n
             cy_col = c
     if not cx_col or not cy_col:
         return matches
+
+    # Target pixel coordinates
     target_x = data_by_name[image_name]["pixel_x"]
     target_y = data_by_name[image_name]["pixel_y"]
+
     for _, row in candidate_rows.iterrows():
         cx = safe_float(row.get(cx_col))
         cy = safe_float(row.get(cy_col))
         if cx is None or cy is None:
             continue
+        # check if coordinates are within allowed deviation
         if abs(cx - target_x) <= max_dev and abs(cy - target_y) <= max_dev:
             matches.append(row)
     return matches
 
 def draw_bboxes_on_image(pil_img, rows_for_image, display_scale):
+    """
+    Draw red bounding boxes on a PIL image based on the DataFrame rows.
+    """
     draw = ImageDraw.Draw(pil_img)
     for r in rows_for_image:
         xmin = safe_float(r.get("xmin"))
@@ -102,6 +129,10 @@ def draw_bboxes_on_image(pil_img, rows_for_image, display_scale):
     return pil_img
 
 def open_and_prepare_image(path, max_size=THUMBNAIL_MAX_SIZE):
+    """
+    Open an image with PIL, resize it proportionally so the maximum dimension
+    does not exceed max_size, and return the resized image and scale factor.
+    """
     if not os.path.exists(path):
         raise FileNotFoundError(f"Image not found: {path}")
     pil = Image.open(path).convert("RGB")
@@ -116,63 +147,80 @@ def open_and_prepare_image(path, max_size=THUMBNAIL_MAX_SIZE):
 def show_images_grid(image_items):
     root = tk.Tk()
     root.title("Matched Images Grid")
-    frame = tk.Frame(root)
-    frame.pack(fill=tk.BOTH, expand=True)
-    canvas = tk.Canvas(frame)
-    vsb = tk.Scrollbar(frame, orient=tk.VERTICAL, command=canvas.yview)
-    hsb = tk.Scrollbar(frame, orient=tk.HORIZONTAL, command=canvas.xview)
-    canvas.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-    vsb.pack(side=tk.RIGHT, fill=tk.Y)
-    hsb.pack(side=tk.BOTTOM, fill=tk.X)
-    canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-    inner = tk.Frame(canvas)
-    canvas.create_window((0, 0), window=inner, anchor='nw')
-    photos = []
-    row_idx = 0
-    col_idx = 0
-    for item in image_items:
+
+    canvas = tk.Canvas(root, width=1200, height=800, bg="black")
+    canvas.pack(fill="both", expand=True)
+
+    # attach list to root so GC never deletes the images
+    root.image_refs = []
+
+    x, y = 10, 10
+    max_row_height = 0
+
+    for idx, item in enumerate(image_items):
+        path = item["path"]
         try:
-            pil_img, scale = open_and_prepare_image(item["path"])
-            orig = Image.open(item["path"]).convert("RGB")
-            display_scale = pil_img.size[0] / orig.size[0]
-            pil_with_boxes = draw_bboxes_on_image(pil_img.copy(), item.get("rows", []), display_scale)
-            tk_img = ImageTk.PhotoImage(pil_with_boxes)
-            photos.append(tk_img)
-            panel = tk.Frame(inner, bd=2, relief=tk.RIDGE)
-            lbl = tk.Label(panel, image=tk_img)
-            lbl.pack()
-            caption = tk.Label(panel, text=item.get("title", os.path.basename(item["path"])))
-            caption.pack()
-            panel.grid(row=row_idx, column=col_idx, padx=8, pady=8)
-            col_idx += 1
-            if col_idx >= GRID_COLUMNS:
-                col_idx = 0
-                row_idx += 1
+            bgr = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+            if bgr is None:
+                print(f"Skipping unreadable image {path}")
+                continue
+
+            # ensure 3-channel RGB
+            if len(bgr.shape) == 2:
+                rgb = cv2.cvtColor(bgr, cv2.COLOR_GRAY2RGB)
+            else:
+                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+            pil_img = Image.fromarray(rgb)
+
+            scale = THUMBNAIL_MAX_SIZE / max(pil_img.size)
+            w, h = int(pil_img.width * scale), int(pil_img.height * scale)
+            pil_img = pil_img.resize((w, h), Image.LANCZOS)
+
+            tk_img = ImageTk.PhotoImage(pil_img, master=root)
+            root.image_refs.append(tk_img)   # keep reference tied to Tk root
+
+            canvas.create_image(x, y, anchor="nw", image=tk_img)
+            name = item.get("title", os.path.basename(path))
+            canvas.create_text(x + w//2, y + h + 10, text=name, fill="white", anchor="n")
+
+            # force Tk to register image before loop continues
+            root.update_idletasks()
+
+            max_row_height = max(max_row_height, h + 20)
+            x += w + 20
+            if (idx + 1) % GRID_COLUMNS == 0:
+                x = 10
+                y += max_row_height
+                max_row_height = 0
+
         except Exception as e:
-            print(f"Could not open image {item['path']}: {e}")
-    inner.update_idletasks()
-    canvas.config(scrollregion=canvas.bbox("all"))
-    canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
+            print(f"Error displaying {path}: {e}")
+
     root.mainloop()
 
+
+
 # ==== Main ====
-def main(data):
+def main(data, csv_path):
+    """
+    Main function to process images and CSV data:
+    - Reads CSV file
+    - Matches images based on pixel coordinates and bounding boxes
+    - Displays matched images in a Tkinter grid
+    """
     try:
         if not isinstance(data, (list, tuple)) or len(data) == 0:
             raise ValueError("`data` must be a non-empty list of image entry dicts.")
 
-        csv_path = ask_csv_file()
-        if not csv_path:
-            print("No CSV selected, aborting.")
-            return
+        df = pd.read_csv(csv_path, dtype={"wiris_image": str, "pi_image": str}, low_memory=False)
 
-        df = pd.read_csv(csv_path)
         first_entry = data[0]
         first_filename = os.path.basename(first_entry["image_path"])
         first_pixel_x = float(first_entry["pixel_x"])
         first_pixel_y = float(first_entry["pixel_y"])
 
-        # --- determine column based on extension ---
+        # --- determine filename column based on extension ---
         ext = os.path.splitext(first_filename)[1].lower()
         if ext == ".tiff":
             filename_col = "wiris_image"
@@ -184,8 +232,9 @@ def main(data):
 
         if filename_col not in df.columns or first_filename not in df[filename_col].astype(str).values:
             messagebox.showerror("Error", f"Filename '{first_filename}' not found in column '{filename_col}'.")
-            return  # END PROGRAM
+            return
 
+        # Find matching row for first image
         first_row = find_exact_row_for_first_image(df, filename_col, first_filename, first_pixel_x, first_pixel_y)
         if first_row is None:
             messagebox.showerror("Error", f"No matching row found for {first_filename} with center_x/center_y = pixel_x/pixel_y.")
@@ -214,6 +263,7 @@ def main(data):
             "rows": first_matching_rows
         })
 
+        # Process remaining images
         for entry in data[1:]:
             bname = os.path.basename(entry["image_path"])
             rows = get_matching_rows_for_image(df, bname, max_deviation, filename_col, data_by_name)
@@ -227,6 +277,7 @@ def main(data):
         if len(matched_items) == 1:
             messagebox.showinfo("Result", "No other images found within the allowed deviation; showing only the first image.")
 
+        # Show all matched images
         show_images_grid(matched_items)
 
     except Exception as e:

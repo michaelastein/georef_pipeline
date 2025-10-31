@@ -1,5 +1,4 @@
 import numpy as np
-import camproject
 from camproject import Camera, Extrinsics
 import cv2
 import tkinter as tk
@@ -19,28 +18,51 @@ DRONE_OFFSET_UP    = 0.0
 PANEL_HEIGHT_CORRECTION = 0.0
 
 # ---------------- Utility Functions ----------------
+
 def rational_to_float(r):
+    """
+    Convert a rational number (tuple/list) to float.
+    If input is not a tuple/list, try converting directly to float.
+    Example: (3, 2) -> 1.5
+    """
     try:
         return r[0] / r[1]
     except Exception:
         return float(r)
 
 def gps_to_decimal(coord, ref):
+    """
+    Convert GPS coordinates from DMS (degrees, minutes, seconds) to decimal degrees.
+    `coord` is a list/tuple of rationals: [deg, min, sec]
+    `ref` is 'N','S','E','W' indicating hemisphere
+    """
     deg = rational_to_float(coord[0])
     minute = rational_to_float(coord[1])
     sec = rational_to_float(coord[2])
     val = deg + minute / 60.0 + sec / 3600.0
+
+    # Handle byte strings for reference
     if isinstance(ref, bytes):
         ref = ref.decode(errors='ignore')
+
+    # Convert to negative for South or West
     if ref in ['S', 's', 'W', 'w']:
         val = -val
     return val
 
 def parse_description_from_exif(exif_dict):
+    """
+    Parse yaw, pitch, roll, and relative altitude from EXIF ImageDescription field.
+    Expected format: "yaw=..., pitch=..., roll=..., rel_alt=..."
+    Returns (yaw, pitch, roll, rel_alt)
+    Raises ValueError if yaw/pitch/roll are missing.
+    """
     desc = exif_dict.get('0th', {}).get(piexif.ImageIFD.ImageDescription, b'')
     if isinstance(desc, bytes):
         desc = desc.decode(errors='ignore')
+
     yaw = pitch = roll = rel_alt = None
+
     if desc:
         for part in str(desc).split(","):
             kv = part.strip().split("=")
@@ -57,46 +79,83 @@ def parse_description_from_exif(exif_dict):
                     elif key_lower in ["relativealt", "rel_alt"]:
                         rel_alt = float(value)
                 except ValueError:
-                    pass
+                    pass  # Ignore non-numeric values
+
     if yaw is None or pitch is None or roll is None:
         raise ValueError("Missing yaw, pitch, or roll in image description.")
     return yaw, pitch, roll, rel_alt
 
 def extract_gps_from_exif(exif_dict):
+    """
+    Extract GPS latitude, longitude, and altitude from EXIF GPS fields.
+    Converts latitude/longitude to decimal degrees and altitude to float,
+    adjusting for altitude reference if needed.
+    """
     gps_ifd = exif_dict.get("GPS", {})
+
+    # Extract GPS tags
     lat_tag = gps_ifd.get(piexif.GPSIFD.GPSLatitude)
     lat_ref = gps_ifd.get(piexif.GPSIFD.GPSLatitudeRef)
     lon_tag = gps_ifd.get(piexif.GPSIFD.GPSLongitude)
     lon_ref = gps_ifd.get(piexif.GPSIFD.GPSLongitudeRef)
     alt_tag = gps_ifd.get(piexif.GPSIFD.GPSAltitude)
     alt_ref = gps_ifd.get(piexif.GPSIFD.GPSAltitudeRef, 0)
+
     if not (lat_tag and lat_ref and lon_tag and lon_ref and alt_tag is not None):
         raise ValueError("Missing GPS fields in EXIF.")
+
     lat = gps_to_decimal(lat_tag, lat_ref)
     lon = gps_to_decimal(lon_tag, lon_ref)
     alt = rational_to_float(alt_tag)
+
+    # Adjust for altitude reference (0 = above sea level, 1 = below sea level)
     alt_ref_val = int(alt_ref[0]) if isinstance(alt_ref, (bytes, bytearray)) else int(alt_ref)
     if alt_ref_val == 1:
         alt = -alt
+
     return lat, lon, alt
 
 def enu_to_gps(x, y, origin_lat, origin_lon):
+    """
+    Convert local ENU (East-North-Up) coordinates to GPS latitude and longitude.
+    `x`, `y` are offsets in meters from origin.
+    Uses UTM projection based on origin latitude/longitude.
+    """
+    # Determine UTM zone
     zone = int((origin_lon + 180)/6)+1
     epsg_code = 32600 + zone if origin_lat >= 0 else 32700 + zone
     utm_crs = pyproj.CRS.from_epsg(epsg_code)
+
+    # Transformer to/from UTM
     t_to_utm = pyproj.Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True)
     t_from_utm = pyproj.Transformer.from_crs(utm_crs, "EPSG:4326", always_xy=True)
+
+    # Convert origin to UTM
     utm_x0, utm_y0 = t_to_utm.transform(origin_lon, origin_lat)
+
+    # Apply ENU offsets
     utm_x = utm_x0 + x
     utm_y = utm_y0 + y
+
+    # Convert back to GPS
     lon, lat = t_from_utm.transform(utm_x, utm_y)
     return lat, lon
 
 def pixel_to_camproject(u, v, width, height):
+    """
+    Convert image pixel coordinates to camera project coordinates.
+    Essentially flips the u-coordinate horizontally.
+    """
     return np.array([width - 1 - u, height - 1 - v])
 
 # ---------------- GUI Helpers ----------------
+
 def load_image_dialog():
+    """
+    Open a file dialog to select an image.
+    Returns the PIL image and file path.
+    Exits program if no image is selected.
+    """
     root = tk.Tk()
     root.withdraw()
     file_path = filedialog.askopenfilename(
@@ -111,48 +170,73 @@ def load_image_dialog():
     return img, file_path
 
 def select_pixel_gui(img_array):
+    """
+    Display an OpenCV window to allow the user to click on a target pixel.
+    Returns the selected pixel coordinates (u, v).
+    Defaults to center if user skips.
+    """
     clicked_point = {}
+
     def click_event(event, x, y, flags, param):
         if event == cv2.EVENT_LBUTTONDOWN:
             clicked_point['u'] = x
             clicked_point['v'] = y
             cv2.destroyAllWindows()
+
     cv2.imshow("Click on target pixel (press ESC to skip)", img_array)
     cv2.setMouseCallback("Click on target pixel (press ESC to skip)", click_event)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
+
+    # Default to image center if no click
     width, height = img_array.shape[1], img_array.shape[0]
     u = clicked_point.get('u', width // 2)
     v = clicked_point.get('v', height // 2)
     return u, v
 
 def show_image_with_buttons(img_array, u, v, filename):
+    """
+    Display an image in a Tkinter window with the selected pixel marked.
+    Provides buttons to rotate the image left or right.
+    """
     img_with_dot = img_array.copy()
-    cv2.circle(img_with_dot, (u, v), radius=5, color=(0, 0, 255), thickness=-1)
+    cv2.circle(img_with_dot, (u, v), radius=5, color=(0, 0, 255), thickness=-1)  # mark pixel
     pil_img = Image.fromarray(cv2.cvtColor(img_with_dot, cv2.COLOR_BGR2RGB))
+
     root = tk.Tk()
     root.title(os.path.basename(filename))
+
     state = {"img": pil_img}
     canvas = tk.Label(root)
     canvas.pack()
+
     def update_image():
+        """Update Tkinter label with current PIL image."""
         tk_img = ImageTk.PhotoImage(state["img"], master=root)
         canvas.configure(image=tk_img)
         canvas.image = tk_img
+
     def rotate_left():
         state["img"] = state["img"].rotate(90, expand=True)
         update_image()
+
     def rotate_right():
         state["img"] = state["img"].rotate(-90, expand=True)
         update_image()
+
     def on_close():
+        """Close window and exit program."""
         root.destroy()
         sys.exit(0)
+
     root.protocol("WM_DELETE_WINDOW", on_close)
+
+    # Buttons frame
     btn_frame = tk.Frame(root)
     btn_frame.pack(pady=10)
     tk.Button(btn_frame, text="⟲ Rotate Left", command=rotate_left).pack(side=tk.LEFT, padx=5)
     tk.Button(btn_frame, text="⟳ Rotate Right", command=rotate_right).pack(side=tk.LEFT, padx=5)
+
     update_image()
     root.mainloop()
 

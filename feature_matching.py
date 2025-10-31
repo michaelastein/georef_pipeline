@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 import piexif
-from tkinter import Tk, Canvas, Scrollbar, LEFT, RIGHT, Y, NW, Toplevel, Label, Entry, Button, Checkbutton, BooleanVar
+from tkinter import Tk, Canvas, Scrollbar, LEFT, RIGHT, Y, NW, Toplevel, Label, Entry, Button, Checkbutton, BooleanVar, simpledialog, StringVar, END
 from PIL import Image, ImageTk, ImageDraw
 from tkinter.filedialog import askopenfilenames, askopenfilename
 import math
@@ -18,20 +18,24 @@ import matching_anomalies
 
 def main(algorithm=None, no_gui=False):
     # ----------------- Parameters -----------------
+    # Thresholds and settings for feature matching, RANSAC, and multithreading
+    threshold_meters = 40.0           # Maximum allowed distance between two drone positions for matching points in meters 
+    ratio_test = 0.7                  # Lowe's ratio test threshold for feature matching
+    ransac_thresh = 4.0               # RANSAC reprojection threshold
+    min_inliers = 20                   # Minimum number of inliers to accept a match
+    dist_consistency_thresh = 40.0    # Maximum allowed consistency distance in meters
+    max_workers = 8                    # Maximum number of parallel threads/workers
 
-    
-    threshold_meters = 40.0
-    ratio_test = 0.7
-    ransac_thresh = 4.0
-    min_inliers = 20
-    dist_consistency_thresh = 40.0
-    max_workers = 8
-    
-    feature_algo = algorithm
-    start_time = time.time()
-    progress_lock = threading.Lock()
+    feature_algo = algorithm           # Feature detection algorithm passed by the user
+    start_time = time.time()           # Track start time for performance measurement
+    progress_lock = threading.Lock()   # Lock to synchronize console progress updates
 
+    # ----------------- Progress printing helper -----------------
     def print_progress(current, total, stage_name, last_print=[-1]):
+        """
+        Prints progress in increments of 5% to avoid flooding the console.
+        Uses a lock to prevent concurrent prints from different threads.
+        """
         percent = int((current / total) * 100) if total > 0 else 100
         with progress_lock:
             if percent // 5 != last_print[0] or current == total:
@@ -40,11 +44,19 @@ def main(algorithm=None, no_gui=False):
 
     # ----------------- Helper functions -----------------
     def rational_to_float(r):
+        """
+        Converts a rational number (tuple or list) to float.
+        If it's already a number, just cast to float.
+        """
         if isinstance(r, (tuple, list)):
             return r[0] / r[1]
         return float(r)
 
     def gps_to_decimal(coord, ref):
+        """
+        Converts GPS coordinates from degrees/minutes/seconds format
+        to decimal degrees. Takes into account hemisphere reference (N/S/E/W).
+        """
         deg = rational_to_float(coord[0])
         minute = rational_to_float(coord[1])
         sec = rational_to_float(coord[2])
@@ -56,6 +68,10 @@ def main(algorithm=None, no_gui=False):
         return val
 
     def extract_gps_from_exif(exif_dict):
+        """
+        Extracts latitude, longitude, and altitude from EXIF GPS info.
+        Takes into account altitude reference (sea level vs. below sea level).
+        """
         gps_ifd = exif_dict.get("GPS", {})
         lat_tag = gps_ifd.get(piexif.GPSIFD.GPSLatitude)
         lat_ref = gps_ifd.get(piexif.GPSIFD.GPSLatitudeRef)
@@ -63,11 +79,16 @@ def main(algorithm=None, no_gui=False):
         lon_ref = gps_ifd.get(piexif.GPSIFD.GPSLongitudeRef)
         alt_tag = gps_ifd.get(piexif.GPSIFD.GPSAltitude)
         alt_ref = gps_ifd.get(piexif.GPSIFD.GPSAltitudeRef, 0)
+        
         if not (lat_tag and lat_ref and lon_tag and lon_ref and alt_tag is not None):
             raise ValueError("Missing GPS fields in EXIF.")
+
+        # Convert latitude, longitude, and altitude to usable floats
         lat = gps_to_decimal(lat_tag, lat_ref)
         lon = gps_to_decimal(lon_tag, lon_ref)
         alt = rational_to_float(alt_tag)
+        
+        # Adjust altitude based on reference (1 = below sea level)
         if isinstance(alt_ref, (bytes, bytearray)):
             alt_ref_val = int(alt_ref[0])
         else:
@@ -77,10 +98,16 @@ def main(algorithm=None, no_gui=False):
         return lat, lon, alt
 
     def parse_description_from_exif(exif_dict):
+        """
+        Extracts additional metadata (yaw, pitch, roll, relative altitude)
+        from the EXIF ImageDescription field.
+        """
         desc = exif_dict.get('0th', {}).get(piexif.ImageIFD.ImageDescription, b'')
         if isinstance(desc, bytes):
             desc = desc.decode(errors='ignore')
+        
         yaw = pitch = roll = rel_alt = None
+        
         if desc:
             for part in str(desc).split(","):
                 kv = part.strip().split("=")
@@ -101,17 +128,33 @@ def main(algorithm=None, no_gui=False):
         return yaw, pitch, roll, rel_alt
 
     def collect_correspondence_data(idx, x_click, y_click, correspondences):
+        """
+        Collects detailed data for each correspondence point across images.
+
+        Parameters:
+            idx (int): The reference index 
+            x_click, y_click (float): Pixel coordinates of the clicked point in the reference image.
+            correspondences (list of tuples): Each tuple contains (image_index, x_pixel, y_pixel).
+
+        Returns:
+            list of dicts: Each entry contains pixel coordinates, GPS info, EXIF orientation, 
+                        relative altitude, and original image size.
+        """
         result = []
         for img_idx, x, y in correspondences:
+            # Retrieve GPS coordinates for this image if available
             lat, lon, alt = gps_positions[img_idx] if gps_positions[img_idx] != (None, None, None) else (None, None, None)
 
+            # Initialize orientation and relative altitude
             yaw = pitch = roll = rel_alt = None
             try:
                 exif_dict = piexif.load(img_paths[img_idx])
                 yaw, pitch, roll, rel_alt = parse_description_from_exif(exif_dict)
             except Exception:
+                # If EXIF info is missing or corrupted, skip orientation
                 pass
 
+            # Build a dictionary entry for this correspondence
             entry = {
                 "image_index": img_idx,
                 "image_path": os.path.abspath(img_paths[img_idx]),
@@ -124,27 +167,55 @@ def main(algorithm=None, no_gui=False):
                 "pitch": pitch,
                 "roll": roll,
                 "rel_alt": rel_alt,
-                "image_size": orig_sizes[img_idx]
+                "image_size": orig_sizes[img_idx]  # Store original image width and height
             }
             result.append(entry)
         return result
 
+
     def haversine(lat1, lon1, lat2, lon2):
-        R = 6371000
+        """
+        Computes the great-circle distance between two GPS coordinates using the Haversine formula.
+        
+        Parameters:
+            lat1, lon1: Latitude and longitude of point 1 in degrees
+            lat2, lon2: Latitude and longitude of point 2 in degrees
+        
+        Returns:
+            Distance in meters between the two points
+        """
+        R = 6371000  # Earth radius in meters
         phi1, phi2 = math.radians(lat1), math.radians(lat2)
         dphi = math.radians(lat2 - lat1)
         dlambda = math.radians(lon2 - lon1)
         a = math.sin(dphi / 2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2)**2
-        return 2 * R * np.arcsin(np.sqrt(a))
+        return 2 * R * math.asin(math.sqrt(a))
+
 
     def preprocess_for_features(img):
+        """
+        Preprocesses an image to enhance feature detection.
+        
+        Steps:
+            1. Convert image to grayscale.
+            2. Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) to improve local contrast.
+        
+        Parameters:
+            img (numpy array): Input color image (BGR)
+        
+        Returns:
+            Preprocessed grayscale image suitable for feature extraction
+        """
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
         return clahe.apply(gray)
 
+
     # ----------------- GUI File Selection -----------------
     root = Tk()
-    root.withdraw()
+    root.withdraw()  # Hide the root Tk window
+
+    # Open a file dialog for the user to select multiple images
     img_paths = askopenfilenames(
         title="Select images",
         filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff")]
@@ -154,18 +225,24 @@ def main(algorithm=None, no_gui=False):
         return
     print(f"Selected {len(img_paths)} images.")
 
-    # ----------------- Load images and GPS -----------------
+
+    # ----------------- Load images and extract GPS -----------------
     images = []
     gps_positions = []
     orig_sizes = []
+
     for path in img_paths:
-        img = cv2.imread(path)
+        img = cv2.imread(path)  # Load the image
         if img is None:
             print(f"Warning: could not read {path}")
             continue
         images.append(img)
+
+        # Store original image size (width, height)
         h, w = img.shape[:2]
         orig_sizes.append((w, h))
+
+        # Try to extract GPS info from EXIF
         try:
             exif_dict = piexif.load(path)
             gps = extract_gps_from_exif(exif_dict)
@@ -173,23 +250,25 @@ def main(algorithm=None, no_gui=False):
         except Exception as e:
             print(f"Warning: no GPS in {path}, {e}")
             gps_positions.append((None, None, None))
+
     if len(images) < 1:
         print("No valid images loaded.")
         return
+
     print(f"Loaded {len(images)} images with GPS info.")
 
-    
 
-    # ----------------- Detector/descriptor -----------------
-    # ----------------- Auto-select feature algorithm if None -----------------
+    # ----------------- Detector / Descriptor Setup -----------------
+    # Automatically select a feature detection algorithm if none was specified
     if feature_algo is None:
         first_path = img_paths[0]
+        # Use BRISK for TIFF images (common for drone/camera output), SIFT otherwise
         if first_path.lower().endswith(".tiff") or first_path.lower().endswith(".tif"):
             feature_algo = "BRISK"
         else:
             feature_algo = "SIFT"
-     
 
+    # Initialize detector and descriptor type based on chosen algorithm
     if feature_algo == "SIFT":
         detector = cv2.SIFT_create()
         descriptor_type = 'float'
@@ -207,21 +286,27 @@ def main(algorithm=None, no_gui=False):
         descriptor_type = 'float'
     else:
         raise ValueError(f"Unsupported feature algorithm: {feature_algo}")
-    
+
     print(f"Using feature algorithm: {feature_algo}")
 
-
-    # ----------------- Matcher -----------------
+    # ----------------- Matcher Setup -----------------
+    # Choose matcher based on descriptor type: FLANN for float, BFMatcher for binary
     if descriptor_type == 'float':
         matcher = cv2.FlannBasedMatcher(dict(algorithm=1, trees=5), dict(checks=50))
     else:
         matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
 
-    # ----------------- Compute features -----------------
+    # ----------------- Compute Features -----------------
+    # Initialize lists to store keypoints and descriptors for each image
     kp_list = [None] * len(images)
     des_list = [None] * len(images)
 
     def ensure_flann_dtype(des):
+        """
+        Ensure descriptor has the correct dtype for the matcher
+        - float32 for FLANN (SIFT, KAZE)
+        - uint8 for binary descriptors (ORB, AKAZE, BRISK)
+        """
         if des is None:
             return None
         if descriptor_type == 'float' and des.dtype != np.float32:
@@ -231,12 +316,14 @@ def main(algorithm=None, no_gui=False):
         return des
 
     def compute_features_for_index(idx):
+        """Compute keypoints and descriptors for a single image."""
         img = images[idx]
         gray = preprocess_for_features(img)
         kp, des = detector.detectAndCompute(gray, None)
         kp_list[idx] = kp
         des_list[idx] = None if des is None else des.copy()
 
+    # Compute features in parallel
     if len(images) > 0:
         with ThreadPoolExecutor(max_workers=min(max_workers, len(images))) as ex:
             futures = [ex.submit(compute_features_for_index, i) for i in range(len(images))]
@@ -245,7 +332,8 @@ def main(algorithm=None, no_gui=False):
                 done_count += 1
                 print_progress(done_count, len(futures), "Feature extraction")
 
-    # ----------------- GPS neighbor prefiltering -----------------
+    # ----------------- GPS Neighbor Prefiltering -----------------
+    # Use GPS to prefilter likely neighboring image pairs to reduce matching cost
     neighbors = []
     for i, (lat_i, lon_i, _) in enumerate(gps_positions):
         if lat_i is None:
@@ -255,20 +343,28 @@ def main(algorithm=None, no_gui=False):
                 continue
             if haversine(lat_i, lon_i, lat_j, lon_j) <= threshold_meters:
                 neighbors.append((i, j))
+
     print(f"Found {len(neighbors)} likely neighbor pairs based on GPS.")
+
+    # Fallback to all pairs if GPS is missing
     if len(neighbors) == 0 and len(images) > 1:
         print("No GPS neighbors found — falling back to all pairs (this may be slow).")
         for i in range(len(images)):
             for j in range(i + 1, len(images)):
                 neighbors.append((i, j))
+
     print(f"Total pairs to attempt: {len(neighbors)}")
 
     # ----------------- Matching + Homography -----------------
-    match_cache = {}
-    H_dict = {}
-    H_inliers = {}
+    match_cache = {}  # Cache to store filtered matches
+    H_dict = {}       # Store computed homographies
+    H_inliers = {}    # Store inlier points for each homography
 
     def match_and_filter_pairs(i, j):
+        """
+        Match features between image i and j using mutual nearest neighbor check
+        and distance consistency filter to remove outliers.
+        """
         key = (i, j)
         if key in match_cache:
             return match_cache[key]
@@ -287,10 +383,12 @@ def main(algorithm=None, no_gui=False):
             knn_j_i = matcher.knnMatch(des_j_q, des_i_q, k=2)
             knn_i_j = matcher.knnMatch(des_i_q, des_j_q, k=2)
         except cv2.error:
+            # Fallback to brute-force matcher if FLANN fails
             bf = cv2.BFMatcher(cv2.NORM_L2 if descriptor_type == 'float' else cv2.NORM_HAMMING, crossCheck=False)
             knn_j_i = bf.knnMatch(des_j_q, des_i_q, k=2)
             knn_i_j = bf.knnMatch(des_i_q, des_j_q, k=2)
 
+        # Apply Lowe's ratio test
         def filter_good(knn):
             good = []
             for m_n in knn:
@@ -301,6 +399,7 @@ def main(algorithm=None, no_gui=False):
         good_j_i = filter_good(knn_j_i)
         good_i_j = filter_good(knn_i_j)
 
+        # Mutual nearest neighbor check
         best_j_to_i = {m.queryIdx: m.trainIdx for m in good_j_i}
         best_i_to_j = {m.queryIdx: m.trainIdx for m in good_i_j}
         mutual = [(q, t) for q, t in best_j_to_i.items() if t in best_i_to_j and best_i_to_j[t] == q]
@@ -309,6 +408,7 @@ def main(algorithm=None, no_gui=False):
             match_cache[key] = []
             return []
 
+        # Distance consistency filtering
         pts_j = np.array([kp_j[q].pt for q, _ in mutual])
         pts_i = np.array([kp_i[t].pt for _, t in mutual])
         vecs = pts_i - pts_j
@@ -320,6 +420,10 @@ def main(algorithm=None, no_gui=False):
         return filtered
 
     def compute_homography_for_pair(pair):
+        """
+        Compute RANSAC homography between two images using filtered matches.
+        Returns inlier points for further processing.
+        """
         i, j = pair
         matches = match_and_filter_pairs(i, j)
         kp_i = kp_list[i]
@@ -335,6 +439,7 @@ def main(algorithm=None, no_gui=False):
         in_dst = dst_pts[mask.ravel() == 1].reshape(-1, 2)
         return (i, j, H, in_src.copy(), in_dst.copy())
 
+    # Compute homographies in parallel
     pairs_to_process = neighbors.copy()
     print(f"Computing homographies for {len(pairs_to_process)} pairs (parallel)...")
     if len(pairs_to_process) > 0:
@@ -359,11 +464,13 @@ def main(algorithm=None, no_gui=False):
     else:
         print("No image pairs to process — skipping homography computation.")
 
+    # ----------------- Timing -----------------
     end_time = time.time()
     elapsed_minutes = (end_time - start_time) / 60
     print(f"Feature extraction + matching + homography runtime: {elapsed_minutes:.2f} minutes "
-          f"for {len(img_paths)} images.")
+        f"for {len(img_paths)} images.")
     print(f"Computed {len(H_dict) // 2} good homography pairs.")
+
 
     # ----------------- Graph helpers -----------------
     adj = {}
@@ -408,11 +515,13 @@ def main(algorithm=None, no_gui=False):
                     q.append(nb)
         return None
     
-    # No-GUI mode
     # ----------------- No-GUI mode -----------------
-        # ----------------- No-GUI mode -----------------
+   
     if no_gui:
+
+
         root.deiconify()  # make sure Tk root exists
+
         while True:
             # Ask user to select one image from the same folder
             single_path = askopenfilename(
@@ -422,88 +531,170 @@ def main(algorithm=None, no_gui=False):
             )
             if not single_path:
                 print("No image selected. Exiting.")
-                break  # exit the loop and program
+                break
 
             if os.path.dirname(single_path) != os.path.dirname(img_paths[0]):
                 print("Selected image is not from the same folder. Try again.")
-                continue  # loop again
+                continue
 
             if single_path not in img_paths:
                 print("Selected image was not in the originally selected batch. Try again.")
-                continue  # loop again
+                continue
 
             idx = img_paths.index(single_path)
-
-            # Ask for X and Y coordinates
-            x = simpledialog.askfloat("Input", f"Enter X pixel coordinate for {os.path.basename(single_path)}")
-            y = simpledialog.askfloat("Input", f"Enter Y pixel coordinate for {os.path.basename(single_path)}")
-            if x is None or y is None:
-                print("No coordinates entered. Exiting.")
-                break  # exit the loop and program
-
             w, h = orig_sizes[idx]
-            if not (0 <= x < w) or not (0 <= y < h):
-                print(f"Coordinates ({x}, {y}) are outside image bounds ({w}x{h}). Try again.")
-                continue  # loop again
 
-            # Compute correspondences and call avg_gps
-            pt = np.array([[x], [y], [1.0]])
-            comp = list(node_connected_component(idx))
-            correspondences = [(idx, x, y)]
-            for other in comp:
-                if other == idx:
-                    continue
-                path = shortest_path(idx, other)
-                if path is None:
-                    continue
-                cur_pt = pt.copy()
-                ok = True
-                for k in range(len(path) - 1):
-                    a = path[k]
-                    b = path[k + 1]
-                    H = H_dict.get((a, b))
-                    if H is None:
-                        ok = False
-                        break
-                    try:
-                        cur_pt = H @ cur_pt
-                        if abs(cur_pt[2, 0]) < 1e-8:
+            # Create input window
+            win = Toplevel(root)
+            win.title(f"Select Pixel and CSV for {os.path.basename(single_path)}")
+
+            # Load image
+            img = Image.open(single_path).convert("RGB")
+            display_img = img.copy()
+            tk_img = ImageTk.PhotoImage(display_img)
+
+            lbl_img = Label(win, image=tk_img)
+            lbl_img.image = tk_img  # keep reference
+            lbl_img.grid(row=0, column=0, columnspan=3)
+
+            # X/Y entries
+            Label(win, text="X:").grid(row=1, column=0)
+            entry_x = Entry(win)
+            entry_x.grid(row=1, column=1)
+
+            Label(win, text="Y:").grid(row=2, column=0)
+            entry_y = Entry(win)
+            entry_y.grid(row=2, column=1)
+
+            # Function to draw marker on image
+            def draw_marker(x, y):
+                nonlocal tk_img, display_img
+                display_img = img.copy()
+                draw = ImageDraw.Draw(display_img)
+                r = 5  # radius of marker
+                draw.ellipse((x-r, y-r, x+r, y+r), fill="red")
+                tk_img = ImageTk.PhotoImage(display_img)
+                lbl_img.config(image=tk_img)
+                lbl_img.image = tk_img  # keep reference
+
+            # Update marker from entries
+            def update_marker_from_entry(*args):
+                try:
+                    x = int(entry_x.get())
+                    y = int(entry_y.get())
+                    if 0 <= x < img.width and 0 <= y < img.height:
+                        draw_marker(x, y)
+                except ValueError:
+                    pass
+
+            entry_x.bind("<KeyRelease>", update_marker_from_entry)
+            entry_y.bind("<KeyRelease>", update_marker_from_entry)
+
+            # Click on image to set position
+            def on_click(event):
+                x, y = event.x, event.y
+                # scale click to original image size if resized
+                if lbl_img.winfo_width() != img.width or lbl_img.winfo_height() != img.height:
+                    x = int(x * img.width / lbl_img.winfo_width())
+                    y = int(y * img.height / lbl_img.winfo_height())
+                entry_x.delete(0, END)
+                entry_x.insert(0, str(x))
+                entry_y.delete(0, END)
+                entry_y.insert(0, str(y))
+                draw_marker(x, y)
+
+            lbl_img.bind("<Button-1>", on_click)
+
+            # CSV selection
+            csv_strvar = StringVar(value="No file selected")
+            csv_path = None
+
+            def select_csv():
+                nonlocal csv_path
+                path = askopenfilename(title="Select CSV File", filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
+                if path:
+                    csv_path = path
+                    csv_strvar.set(path)
+                    print(f"Selected CSV: {path}")
+
+            Button(win, text="Select CSV", command=select_csv).grid(row=3, column=0)
+            Label(win, textvariable=csv_strvar, wraplength=300, fg="gray").grid(row=3, column=1, columnspan=2)
+
+
+
+            # Submit handler
+            def on_submit():
+                nonlocal csv_path
+                # Read X/Y coordinates
+                try:
+                    x = float(entry_x.get())
+                    y = float(entry_y.get())
+                except ValueError:
+                    print("Invalid coordinates.")
+                    return
+
+                if not (0 <= x < w) or not (0 <= y < h):
+                    print(f"Coordinates ({x}, {y}) are out of bounds ({w}x{h}). Try again.")
+                    return
+
+                # Compute correspondences
+                pt = np.array([[x], [y], [1.0]])
+                comp = list(node_connected_component(idx))
+                correspondences = [(idx, x, y)]
+                for other in comp:
+                    if other == idx:
+                        continue
+                    path = shortest_path(idx, other)
+                    if path is None:
+                        continue
+                    cur_pt = pt.copy()
+                    ok = True
+                    for k in range(len(path) - 1):
+                        a = path[k]
+                        b = path[k + 1]
+                        H = H_dict.get((a, b))
+                        if H is None:
                             ok = False
                             break
-                        cur_pt = cur_pt / cur_pt[2, 0]
-                    except Exception:
-                        ok = False
-                        break
-                if not ok:
-                    continue
-                correspondences.append((other, cur_pt[0, 0], cur_pt[1, 0]))
+                        try:
+                            cur_pt = H @ cur_pt
+                            if abs(cur_pt[2, 0]) < 1e-8:
+                                ok = False
+                                break
+                            cur_pt = cur_pt / cur_pt[2, 0]
+                        except Exception:
+                            ok = False
+                            break
+                    if not ok:
+                        continue
+                    correspondences.append((other, cur_pt[0, 0], cur_pt[1, 0]))
 
                 data = collect_correspondence_data(idx, x, y, correspondences)
 
-                # Always run avg_gps
+                # Always call avg_gps
                 try:
+                    import avg_gps
                     avg_gps.main(data)
                 except Exception as e:
                     print(f"avg_gps.main error: {e}")
 
-            # Show pixel on image
-            try:
-                img = Image.open(single_path).convert("RGB")
-                draw = Image.new("RGB", img.size)
-                draw.paste(img)
-                from PIL import ImageDraw
-                draw_img = ImageDraw.Draw(draw)
-                r = 5
-                draw_img.ellipse((x-r, y-r, x+r, y+r), outline="red", width=2)
-                viz_win = Toplevel()
-                viz_win.title(f"Selected Pixel in {os.path.basename(single_path)}")
-                tk_img = ImageTk.PhotoImage(draw)
-                lbl = Label(viz_win, image=tk_img)
-                lbl.image = tk_img
-                lbl.pack()
-                viz_win.mainloop()
-            except Exception as e:
-                print(f"Error visualizing the selected pixel: {e}")
+                # Call matching_anomalies if a CSV was selected
+                if csv_path:
+                    try:
+                        matching_anomalies.main(data, csv_path)
+                    except Exception as e:
+                        print(f"matching_anomalies.main error: {e}")
+
+                
+
+                win.destroy()  # close window and continue loop
+
+            Button(win, text="Submit", command=on_submit).grid(row=4, column=0, columnspan=3, pady=5)
+
+            win.grab_set()
+            win.wait_window()  # wait until closed before looping again
+
+
 
 
     
@@ -524,7 +715,7 @@ def main(algorithm=None, no_gui=False):
 
         # Layout-Parameter
         cols = 6
-        thumb_size = 200  # Basisgröße (kann dynamisch angepasst werden)
+        thumb_size = 200 
         padding = 10
         text_height = 18
         row_height = thumb_size + text_height + padding
@@ -534,7 +725,7 @@ def main(algorithm=None, no_gui=False):
         pil_cache = OrderedDict()  # index -> PIL.Image
         # photo_cache holds ImageTk.PhotoImage objects created in main thread (to draw on Canvas)
         photo_cache = {}  # index -> PhotoImage
-        MAX_CACHE_ITEMS = 200  # Gesamtzahl von Thumbnails behalten (anpassen je nach RAM)
+        MAX_CACHE_ITEMS = 200  
         cache_lock = threading.Lock()
 
         # Queues für Background Loader
@@ -542,7 +733,7 @@ def main(algorithm=None, no_gui=False):
         result_queue = queue.Queue()
         stop_event = threading.Event()
 
-        # Berechne Positionen bereits (so wissen wir immer bbox auch wenn noch nicht geladen)
+       
         img_positions = []  # tuple: (x_canvas, y_canvas, scale, disp_w, disp_h)
         for i, (w, h) in enumerate(orig_sizes):
             scale = min(thumb_size / h, thumb_size / w)
@@ -658,7 +849,7 @@ def main(algorithm=None, no_gui=False):
             half = size / 2
             return canvas_side.create_rectangle(x - half, y - half, x + half, y + half, fill=color, outline=color)
 
-        # ----------------- Main-thread Verarbeitung -----------------
+        # ----------------- Main-thread  -----------------
         def process_loader_results():
             processed = 0
             while True:
@@ -680,7 +871,7 @@ def main(algorithm=None, no_gui=False):
                             canvas_side.delete(drawn_text_items[old_idx])
                             del drawn_text_items[old_idx]
 
-                # Tkinter PhotoImage erstellen **im Main-Thread**
+                # create Tkinter PhotoImage  **in Main-Thread**
                 photo = ImageTk.PhotoImage(pil_img)
                 photo_cache[idx] = photo
                 if idx in get_visible_indices():
@@ -706,16 +897,16 @@ def main(algorithm=None, no_gui=False):
 
         # ----------------- Click-Handler -----------------
         def handle_image_click(idx, x_orig, y_orig, x_canvas, y_canvas, scale):
-            # Marker löschen
+            # delete marker
             for mid in marker_items:
                 canvas_side.delete(mid)
             marker_items.clear()
 
-            # Marker für eigenes Bild
+            
             m_self = create_marker_canvas(x_canvas + x_orig * scale, y_canvas + y_orig * scale, color="red")
             marker_items.append(m_self)
 
-            # Homography-Korrespondenzen
+            # Homography-correspondences
             pt = np.array([[x_orig], [y_orig], [1.0]])
             comp = list(node_connected_component(idx))
             correspondences = [(idx, x_orig, y_orig)]
@@ -776,7 +967,7 @@ def main(algorithm=None, no_gui=False):
                     if idx in photo_cache and idx not in drawn_image_items:
                         draw_canvas_image(idx, photo_cache[idx])
             # Schedule next call
-            root.after(100, periodic_update)
+            root.after(300, periodic_update)
 
         # initial filling (enqueue a few)
         enqueue_visible_and_neighbors()
