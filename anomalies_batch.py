@@ -5,7 +5,7 @@ from collections import Counter
 import pandas as pd
 import tkinter as tk
 from tkinter import filedialog, messagebox
-
+import plot_cad  
 import avg_gps
 import matching_anomalies
 
@@ -130,6 +130,29 @@ def main(image_data_list, output_csv_path=None):
 
         print(f"Batch processing done. Results saved to: {output_csv_path}")
         messagebox.showinfo("Batch Processing Done", f"Results saved to: {output_csv_path}")
+
+        # --- Prepare data for CAD map ---
+        target_points = []
+        for row in output_rows:
+            lat = row.get("avg_lat")
+            lon = row.get("avg_lon")
+            if lat is not None and lon is not None:
+                target_points.append({
+                    "target_gps": (lat, lon),
+                    "score": 1.0  # Optional: assign a uniform score or compute based on confidence
+                })
+
+        if target_points:
+           
+            # Use first target as central target
+            central_target = (float(target_points[0]["target_gps"][0]),
+                            float(target_points[0]["target_gps"][1]))
+            plot_cad.plot_cad_map(
+                target_gps=central_target,
+                points=target_points,
+                geojson_file="panels_with_row_plaintext_below.geojson",
+                map_file="batch_targets_map.html"
+            )
 
     except Exception as e:
         print(f"Error during batch processing: {e}")
