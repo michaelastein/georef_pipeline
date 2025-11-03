@@ -7,24 +7,33 @@ import pandas as pd
 import cv2
 
 # ==== Configuration ====
-MAX_DEVIATION_FRACTION = 0.5  # Fraction of bounding box size allowed for deviation
-GRID_COLUMNS = 4               # Number of columns in the displayed image grid
-THUMBNAIL_MAX_SIZE = 200       # Maximum size (pixels) for thumbnail display
+MAX_DEVIATION_FRACTION = 0.5  # Fraction of bounding box size allowed for deviation when matching
+GRID_COLUMNS = 4               # Number of columns in the GUI grid for displaying images
+THUMBNAIL_MAX_SIZE = 200       # Maximum width/height for thumbnail images in grid
 
 # ==== Helpers ====
 
 def safe_float(x):
+    """
+    Safely convert a value to float.
+    Returns None if conversion fails.
+    """
     try:
         return float(x)
     except Exception:
         return None
 
 def find_exact_row_for_first_image(df, filename_col, filename, pixel_x, pixel_y):
+    """
+    Find the row in a dataframe corresponding to the first image based on filename
+    and pixel coordinates, allowing a small tolerance.
+    Returns the first matching row or None.
+    """
     candidate_rows = df[df[filename_col].astype(str).str.strip() == filename]
     if candidate_rows.empty:
         return None
 
-    tol = 20
+    tol = 20  # tolerance in pixels
     for _, r in candidate_rows.iterrows():
         cx = safe_float(r.get("center_x"))
         cy = safe_float(r.get("center_y"))
@@ -35,6 +44,10 @@ def find_exact_row_for_first_image(df, filename_col, filename, pixel_x, pixel_y)
     return None
 
 def compute_max_deviation_from_bbox(row, fraction=MAX_DEVIATION_FRACTION):
+    """
+    Compute the maximum allowed deviation based on bounding box size.
+    If bounding box is invalid, returns default of 10 pixels.
+    """
     xmin = safe_float(row.get("xmin"))
     xmax = safe_float(row.get("xmax"))
     ymin = safe_float(row.get("ymin"))
@@ -46,6 +59,10 @@ def compute_max_deviation_from_bbox(row, fraction=MAX_DEVIATION_FRACTION):
     return max(w, h) * fraction if max(w, h) > 0 else 10.0
 
 def get_matching_rows_for_image(df, image_name, max_dev, filename_col, data_by_name):
+    """
+    Find all rows in the dataframe corresponding to a given image that
+    match within the max deviation from the pixel coordinates in data_by_name.
+    """
     matches = []
     if filename_col not in df.columns:
         return matches
@@ -65,6 +82,7 @@ def get_matching_rows_for_image(df, image_name, max_dev, filename_col, data_by_n
     if not cx_col or not cy_col:
         return matches
 
+    # Get target pixel from provided data
     target_x = data_by_name[image_name]["pixel_x"]
     target_y = data_by_name[image_name]["pixel_y"]
 
@@ -78,6 +96,9 @@ def get_matching_rows_for_image(df, image_name, max_dev, filename_col, data_by_n
     return matches
 
 def draw_bboxes_on_image(pil_img, rows_for_image, display_scale=1.0):
+    """
+    Draw bounding boxes from dataframe rows onto a PIL image.
+    """
     draw = ImageDraw.Draw(pil_img)
     for r in rows_for_image:
         xmin = safe_float(r.get("xmin"))
@@ -97,10 +118,13 @@ def draw_bboxes_on_image(pil_img, rows_for_image, display_scale=1.0):
     return pil_img
 
 def show_images_grid(image_items):
+    """
+    Display a grid of images with optional bounding boxes in a Tkinter GUI.
+    """
     root = tk.Tk()
     root.title("Matched Images Grid")
 
-    # --- Canvas and scrollbars ---
+    # --- Canvas with scrollbars ---
     canvas = tk.Canvas(root, bg="white")
     h_scroll = tk.Scrollbar(root, orient="horizontal", command=canvas.xview)
     v_scroll = tk.Scrollbar(root, orient="vertical", command=canvas.yview)
@@ -113,6 +137,7 @@ def show_images_grid(image_items):
     frame = tk.Frame(canvas, bg="white")
     canvas.create_window((0, 0), window=frame, anchor="nw")
 
+    # Keep references to images to avoid garbage collection
     root.image_refs = []
 
     x, y = 10, 10
@@ -125,18 +150,21 @@ def show_images_grid(image_items):
         try:
             pil_img = Image.open(path).convert("RGB")
 
-            # Draw bboxes if any
+            # Draw bounding boxes if available
             if rows_for_image:
                 scale = min(1.0, THUMBNAIL_MAX_SIZE / max(pil_img.size))
                 pil_img = draw_bboxes_on_image(pil_img, rows_for_image, display_scale=scale)
             else:
                 scale = min(1.0, THUMBNAIL_MAX_SIZE / max(pil_img.size))
 
+            # Create thumbnail
             pil_img.thumbnail((THUMBNAIL_MAX_SIZE, THUMBNAIL_MAX_SIZE), Image.LANCZOS)
 
+            # Convert to Tkinter-compatible image
             tk_img = ImageTk.PhotoImage(pil_img, master=root)
             root.image_refs.append(tk_img)
 
+            # Create label for image with optional title
             lbl_img = tk.Label(frame, image=tk_img, text=item.get("title", os.path.basename(path)),
                                compound="top", bg="white", fg="black")
             lbl_img.place(x=x, y=y)
@@ -159,18 +187,25 @@ def show_images_grid(image_items):
 
 # ==== Main Function ====
 def main(data, csv_path):
+    """
+    Main function to match images with CSV entries and optionally display a grid.
+    - data: list of image entry dicts containing 'image_path' and pixel info
+    - csv_path: path to CSV file with annotation data
+    """
     try:
         if not isinstance(data, (list, tuple)) or len(data) == 0:
             raise ValueError("`data` must be a non-empty list of image entry dicts.")
 
+        # Load CSV
         df = pd.read_csv(csv_path, dtype=str, low_memory=False)
 
+        # First image info
         first_entry = data[0]
         first_filename = os.path.basename(first_entry["image_path"])
         first_pixel_x = float(first_entry["pixel_x"])
         first_pixel_y = float(first_entry["pixel_y"])
 
-        # Determine filename column
+        # Determine which filename column to use
         ext = os.path.splitext(first_filename)[1].lower()
         if ext == ".tiff":
             filename_col = "wiris_image"
@@ -180,15 +215,18 @@ def main(data, csv_path):
             messagebox.showerror("Error", f"Unsupported first image extension '{ext}'.")
             return
 
+        # Check filename exists in CSV
         if filename_col not in df.columns or first_filename not in df[filename_col].astype(str).values:
             messagebox.showerror("Error", f"Filename '{first_filename}' not found in column '{filename_col}'.")
             return
 
+        # Find exact row for first image
         first_row = find_exact_row_for_first_image(df, filename_col, first_filename, first_pixel_x, first_pixel_y)
         if first_row is None:
             messagebox.showerror("Error", f"No matching row found for {first_filename}.")
             return
 
+        # Compute max deviation based on bounding box
         max_deviation = compute_max_deviation_from_bbox(first_row)
         data_by_name = {os.path.basename(e["image_path"]): e for e in data}
 
@@ -227,7 +265,8 @@ def main(data, csv_path):
         if len(matched_items) == 1:
             messagebox.showinfo("Result", "Only the first image found; no other matches.")
 
-        #show_images_grid(matched_items)
+        # Optionally display grid of matched images
+        # show_images_grid(matched_items)
 
         # Print filenames of all matched items
         for item in matched_items:
@@ -237,4 +276,3 @@ def main(data, csv_path):
     except Exception as e:
         traceback.print_exc()
         messagebox.showerror("Unexpected error", str(e))
-

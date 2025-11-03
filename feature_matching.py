@@ -15,10 +15,14 @@ import matching_anomalies
 from tkinter.filedialog import askopenfilename, askopenfilenames
 from collections import deque
 import pickle
-
+import georef_new
 # ---------------------- Utility Functions ----------------------
+
 def haversine(lat1, lon1, lat2, lon2):
-    R = 6371000
+    """
+    Compute the Haversine distance between two GPS coordinates in meters.
+    """
+    R = 6371000  # Earth radius in meters
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
     dphi = math.radians(lat2 - lat1)
     dlambda = math.radians(lon2 - lon1)
@@ -27,12 +31,20 @@ def haversine(lat1, lon1, lat2, lon2):
 
 
 def preprocess_for_features(img):
+    """
+    Convert an image to grayscale and apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
+    to enhance features for keypoint detection.
+    """
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     return clahe.apply(gray)
 
 
 def print_progress(current, total, stage_name, last_print=[-1], lock=None):
+    """
+    Print progress updates in increments of 5%.
+    Can optionally be thread-safe using a lock.
+    """
     percent = int((current / total) * 100) if total > 0 else 100
     if lock:
         with lock:
@@ -45,8 +57,10 @@ def print_progress(current, total, stage_name, last_print=[-1], lock=None):
             last_print[0] = percent // 5
 
 
-
 def save_homographies(H_dict, image_data_list, filename="homographies.pkl"):
+    """
+    Save computed homographies and associated image metadata to a file using pickle.
+    """
     data_to_save = {
         "H_dict": H_dict,
         "image_data_list": image_data_list
@@ -57,76 +71,44 @@ def save_homographies(H_dict, image_data_list, filename="homographies.pkl"):
 
 
 def load_homographies(filename="homographies.pkl"):
+    """
+    Load previously saved homographies and image metadata from a pickle file.
+    """
     with open(filename, "rb") as f:
         data = pickle.load(f)
     print(f"Loaded homographies and image data from {filename}")
     return data["H_dict"], data["image_data_list"]
 
 
-
 # ---------------------- Metadata / CSV ----------------------
+
 def extract_metadata_from_csv():
-    img_paths = askopenfilenames(title="Select images", filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff")])
+    """
+    Prompt user to select images, then extract metadata using georef_new.extract_metadata_from_csv.
+    Returns a list of image metadata dictionaries.
+    """
+    # Prompt user to select image files
+    img_paths = askopenfilenames(
+        title="Select images",
+        filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff")]
+    )
     if not img_paths:
         print("No images selected.")
         return []
 
-    folder = Path(img_paths[0]).parent
-    csv_files = list(folder.glob("*.csv"))
-    if len(csv_files) != 1:
-        csv_path = askopenfilename(title="Select CSV file", filetypes=[("CSV files", "*.csv")])
-        if not csv_path:
-            raise FileNotFoundError("No CSV file selected")
-    else:
-        csv_path = str(csv_files[0])
-
-    print(f"Using CSV file: {csv_path}")
-    metadata_dict = {}
-    with open(csv_path, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            img_file = row.get("wiris_image", "").strip()
-            if not img_file:
-                continue
-            metadata_dict[img_file] = {
-                "lat": float(row.get("Latitude", "nan")),
-                "lon": float(row.get("Longitude", "nan")),
-                "alt": float(row.get("alt", "nan")),
-                "yaw": float(row.get("GimbalYawE", "nan")),
-                "pitch": float(row.get("pitch_agisoft", "nan")),
-                "roll": float(row.get("roll", "nan")),
-                "rel_alt": float(row.get("CHeight", "nan"))
-            }
-
-    image_data_list = []
-    for idx, path in enumerate(img_paths):
-        fname = os.path.basename(path)
-        meta = metadata_dict.get(fname)
-        img = cv2.imread(path)
-        if img is None:
-            print(f"Warning: could not read {path}")
-            continue
-        w, h = img.shape[1], img.shape[0]
-        entry = {
-            "image_index": idx,
-            "image_path": os.path.abspath(path),
-            "gps": (meta["lat"], meta["lon"], meta["alt"], meta["rel_alt"]) if meta else (None, None, None, None),
-            "yaw": meta["yaw"] if meta else None,
-            "pitch": meta["pitch"] if meta else None,
-            "roll": meta["roll"] if meta else None,
-            "image_size": (w, h)
-        }
-        image_data_list.append(entry)
-        if meta is None:
-            print(f"Warning: No CSV metadata for {fname}")
-    return image_data_list
-
+    # Delegate all metadata extraction to georef_new
+    return georef_new.extract_metadata_from_csv(img_paths)
 
 # ---------------------- Correspondences ----------------------
+
 def build_correspondences_from_pixels(idx, x, y, image_data_list, H_dict, node_connected_component, shortest_path):
-    pt = np.array([[x], [y], [1.0]])
+    """
+    Given a pixel location in one image, compute its corresponding pixel locations
+    in all connected images using the homography graph.
+    """
+    pt = np.array([[x], [y], [1.0]])  # Homogeneous coordinate
     correspondences = [(idx, x, y)]
-    comp = node_connected_component(idx)
+    comp = node_connected_component(idx)  # Get all connected images
     for other in comp:
         if other == idx:
             continue
@@ -135,6 +117,7 @@ def build_correspondences_from_pixels(idx, x, y, image_data_list, H_dict, node_c
             continue
         cur_pt = pt.copy()
         ok = True
+        # Apply homographies along the path
         for k in range(len(path) - 1):
             a, b = path[k], path[k + 1]
             H = H_dict.get((a, b))
@@ -152,6 +135,7 @@ def build_correspondences_from_pixels(idx, x, y, image_data_list, H_dict, node_c
                 break
         if ok:
             correspondences.append((other, cur_pt[0, 0], cur_pt[1, 0]))
+    # Build final data with pixel info
     result = []
     for img_idx, px, py in correspondences:
         entry = image_data_list[img_idx].copy()
@@ -161,7 +145,17 @@ def build_correspondences_from_pixels(idx, x, y, image_data_list, H_dict, node_c
 
 
 # ---------------------- Main Function ----------------------
+
 def main(algorithm=None, anomalies=None, homographies_path=None):
+    """
+    Main pipeline:
+    1. Load images and metadata (or load precomputed homographies)
+    2. Detect and compute features
+    3. Compute neighbors based on GPS threshold
+    4. Match features between neighbors and compute homographies
+    5. Build a graph of homographies
+    6. Launch GUI or anomalies processing
+    """
     threshold_meters = 40.0
     ratio_test = 0.7
     ransac_thresh = 4.0
@@ -172,21 +166,17 @@ def main(algorithm=None, anomalies=None, homographies_path=None):
     start_time = time.time()
     match_cache, H_dict, H_inliers = {}, {}, {}
 
-
+    # ---------------------- Load or compute homographies ----------------------
     if homographies_path:
-        # Load precomputed homographies + image data
         H_dict, image_data_list = load_homographies(homographies_path)
         images = [cv2.imread(entry["image_path"]) for entry in image_data_list]
         orig_sizes = [entry["image_size"] for entry in image_data_list]
         gps_positions = [entry["gps"] for entry in image_data_list]
         print("Using loaded homographies and image data. Skipping image selection.")
-
     else:
-        # Extract image paths + metadata via GUI
         image_data_list = extract_metadata_from_csv()
         if not image_data_list:
             return
-
         images, orig_sizes, gps_positions = [], [], []
         for entry in image_data_list:
             img = cv2.imread(entry["image_path"])
@@ -196,14 +186,13 @@ def main(algorithm=None, anomalies=None, homographies_path=None):
             images.append(img)
             orig_sizes.append((img.shape[1], img.shape[0]))
             gps_positions.append(entry["gps"])
-
         if not images:
             print("No valid images loaded.")
             return
 
-
-    # ---------------------- Detector ----------------------
+    # ---------------------- Feature Detector Setup ----------------------
     if algorithm is None:
+        # Default: BRISK for TIFF images, otherwise SIFT
         algorithm = "BRISK" if image_data_list[0]["image_path"].lower().endswith((".tif", ".tiff")) else "SIFT"
 
     if algorithm == "SIFT":
@@ -226,17 +215,20 @@ def main(algorithm=None, anomalies=None, homographies_path=None):
     kp_list, des_list = [None]*len(images), [None]*len(images)
 
     def ensure_flann_dtype(des):
+        """Ensure descriptors have correct type for FLANN matcher"""
         if des is None: return None
         if descriptor_type == "float" and des.dtype != np.float32: return des.astype(np.float32)
         if descriptor_type != "float" and des.dtype != np.uint8: return des.astype(np.uint8)
         return des
 
     def compute_features_for_index(idx):
+        """Compute keypoints and descriptors for a single image."""
         gray = preprocess_for_features(images[idx])
         kp, des = detector.detectAndCompute(gray, None)
         kp_list[idx] = kp
         des_list[idx] = des.copy() if des is not None else None
 
+    # Multi-threaded feature computation
     with ThreadPoolExecutor(max_workers=min(max_workers, len(images))) as ex:
         futures = [ex.submit(compute_features_for_index, i) for i in range(len(images))]
         done_count = 0
@@ -252,6 +244,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None):
             if i >= j or lat_j is None: continue
             if haversine(lat_i, lon_i, lat_j, lon_j) <= threshold_meters:
                 neighbors.append((i, j))
+    # If no neighbors found, fall back to all pairs
     if not neighbors and len(images) > 1:
         for i in range(len(images)):
             for j in range(i+1, len(images)):
@@ -261,108 +254,188 @@ def main(algorithm=None, anomalies=None, homographies_path=None):
     # ---------------------- Matching & Homography ----------------------
 
     def match_and_filter_pairs(i, j):
+        """
+        Match keypoints between two images i and j and filter matches for consistency.
+        Returns a list of filtered mutual matches.
+        """
         key = (i, j)
-        if key in match_cache: return match_cache[key]
+        
+        # Return cached matches if already computed
+        if key in match_cache:
+            return match_cache[key]
+
         des_i, des_j = des_list[i], des_list[j]
         kp_i, kp_j = kp_list[i], kp_list[j]
+
+        # Skip if either image has no descriptors or keypoints
         if des_i is None or des_j is None or kp_i is None or kp_j is None:
-            match_cache[key] = []; return []
+            match_cache[key] = []
+            return []
+
+        # Ensure correct descriptor type for FLANN or BF matcher
         des_i_q, des_j_q = ensure_flann_dtype(des_i), ensure_flann_dtype(des_j)
+
+        # Try matching with the main matcher
         try:
-            knn_j_i = matcher.knnMatch(des_j_q, des_i_q, k=2)
-            knn_i_j = matcher.knnMatch(des_i_q, des_j_q, k=2)
+            knn_j_i = matcher.knnMatch(des_j_q, des_i_q, k=2)  # from j to i
+            knn_i_j = matcher.knnMatch(des_i_q, des_j_q, k=2)  # from i to j
         except cv2.error:
+            # Fallback to brute-force matcher if FLANN fails
             bf = cv2.BFMatcher(cv2.NORM_L2 if descriptor_type == "float" else cv2.NORM_HAMMING, crossCheck=False)
             knn_j_i = bf.knnMatch(des_j_q, des_i_q, k=2)
             knn_i_j = bf.knnMatch(des_i_q, des_j_q, k=2)
 
         def filter_good(knn):
-            good = [m_n[0] for m_n in knn if len(m_n) == 2 and m_n[0].distance < ratio_test*m_n[1].distance]
+            """
+            Apply Lowe's ratio test to filter good matches.
+            """
+            good = [m_n[0] for m_n in knn if len(m_n) == 2 and m_n[0].distance < ratio_test * m_n[1].distance]
             return good
 
+        # Filter matches with ratio test
         good_j_i, good_i_j = filter_good(knn_j_i), filter_good(knn_i_j)
+
+        # Keep only mutual matches (cross-check)
         best_j_to_i = {m.queryIdx: m.trainIdx for m in good_j_i}
         best_i_to_j = {m.queryIdx: m.trainIdx for m in good_i_j}
         mutual = [(q, t) for q, t in best_j_to_i.items() if t in best_i_to_j and best_i_to_j[t] == q]
+
         if not mutual:
-            match_cache[key] = []; return []
+            match_cache[key] = []
+            return []
+
+        # Compute geometric consistency (distance vector check)
         pts_j = np.array([kp_j[q].pt for q, _ in mutual])
         pts_i = np.array([kp_i[t].pt for _, t in mutual])
         vecs = pts_i - pts_j
         mean_vec = np.mean(vecs, axis=0)
         dists = np.linalg.norm(vecs - mean_vec, axis=1)
+        
+        # Keep matches consistent within distance threshold
         filtered = [mutual[idx] for idx, k in enumerate(dists <= dist_consistency_thresh) if k]
+
+        # Cache and return filtered matches
         match_cache[key] = filtered
         return filtered
 
+
     def compute_homography_for_pair(pair):
+        """
+        Compute homography between a pair of images using filtered matches.
+        Returns homography matrix and inlier points if sufficient matches exist.
+        """
         i, j = pair
         matches = match_and_filter_pairs(i, j)
-        if len(matches) < min_inliers: return None
-        src_pts = np.float32([kp_list[j][q].pt for q,_ in matches]).reshape(-1,1,2)
-        dst_pts = np.float32([kp_list[i][t].pt for _,t in matches]).reshape(-1,1,2)
+
+        if len(matches) < min_inliers:  # skip pairs with too few matches
+            return None
+
+        # Prepare source (j) and destination (i) points
+        src_pts = np.float32([kp_list[j][q].pt for q, _ in matches]).reshape(-1, 1, 2)
+        dst_pts = np.float32([kp_list[i][t].pt for _, t in matches]).reshape(-1, 1, 2)
+
+        # Compute homography using RANSAC
         H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, ransac_thresh)
-        if H is None or mask is None or int(np.sum(mask)) < min_inliers: return None
-        in_src = src_pts[mask.ravel()==1].reshape(-1,2)
-        in_dst = dst_pts[mask.ravel()==1].reshape(-1,2)
+        if H is None or mask is None or int(np.sum(mask)) < min_inliers:
+            return None
+
+        # Extract inlier points
+        in_src = src_pts[mask.ravel() == 1].reshape(-1, 2)
+        in_dst = dst_pts[mask.ravel() == 1].reshape(-1, 2)
+
         return i, j, H, in_src.copy(), in_dst.copy()
 
+
+    # Compute homographies for all neighbor pairs in parallel
     if neighbors:
         done_pairs = 0
-        with ThreadPoolExecutor(max_workers=min(max_workers,len(neighbors))) as ex:
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(neighbors))) as ex:
             futures = {ex.submit(compute_homography_for_pair, p): p for p in neighbors}
             for fut in as_completed(futures):
                 res = fut.result()
                 done_pairs += 1
                 print_progress(done_pairs, len(futures), "Homography", lock=progress_lock)
-                if res is None: continue
+                if res is None:
+                    continue
                 i, j, H, in_src, in_dst = res
-                H_dict[(j,i)] = H; H_inliers[(j,i)] = in_dst.copy()
-                try: H_inv = np.linalg.inv(H); H_dict[(i,j)] = H_inv; H_inliers[(i,j)] = in_src.copy()
-                except np.linalg.LinAlgError: pass
+                # Store homography and inliers
+                H_dict[(j, i)] = H
+                H_inliers[(j, i)] = in_dst.copy()
+                try:
+                    H_inv = np.linalg.inv(H)
+                    H_dict[(i, j)] = H_inv
+                    H_inliers[(i, j)] = in_src.copy()
+                except np.linalg.LinAlgError:
+                    pass  # singular matrix, skip inverse
 
-    print(f"Feature extraction + matching + homography runtime: {(time.time()-start_time)/60:.2f} min")
+    print(f"Feature extraction + matching + homography runtime: {(time.time() - start_time)/60:.2f} min")
     print(f"Computed {len(H_dict)//2} good homography pairs.")
 
+
     # ---------------------- Graph helpers ----------------------
+
+    # Build adjacency list for homography graph
     adj = {}
-    for (a,b) in H_dict.keys():
-        adj.setdefault(a,set()).add(b)
-        adj.setdefault(b,set()).add(a)
+    for (a, b) in H_dict.keys():
+        adj.setdefault(a, set()).add(b)
+        adj.setdefault(b, set()).add(a)
+
 
     def node_connected_component(start):
-        if start not in adj: return {start}
-        seen = {start}; q=[start]
+        """
+        Return all nodes connected to 'start' in the homography graph.
+        """
+        if start not in adj:
+            return {start}
+        seen = {start}
+        q = [start]
         while q:
             u = q.pop(0)
-            for v in adj.get(u,()):
+            for v in adj.get(u, ()):
                 if v not in seen:
-                    seen.add(v); q.append(v)
+                    seen.add(v)
+                    q.append(v)
         return seen
 
-    def shortest_path(u,v):
-        if u==v: return [u]
-        if u not in adj: return None
-        q = deque([u]); parent={u:None}
+
+    def shortest_path(u, v):
+        """
+        Compute shortest path from node u to v using BFS.
+        Returns a list of nodes along the path.
+        """
+        if u == v:
+            return [u]
+        if u not in adj:
+            return None
+        q = deque([u])
+        parent = {u: None}
         while q:
             cur = q.popleft()
-            for nb in adj.get(cur,()):
+            for nb in adj.get(cur, ()):
                 if nb not in parent:
-                    parent[nb]=cur
-                    if nb==v:
-                        path=[v]; p=v
+                    parent[nb] = cur
+                    if nb == v:
+                        # Reconstruct path from u to v
+                        path = [v]
+                        p = v
                         while parent[p] is not None:
-                            p=parent[p]; path.append(p)
-                        path.reverse(); return path
+                            p = parent[p]
+                            path.append(p)
+                        path.reverse()
+                        return path
                     q.append(nb)
         return None
-    
+
+
+    # Save homographies to file if not loaded
     if not homographies_path:
-         save_homographies(H_dict, image_data_list)
+        save_homographies(H_dict, image_data_list)
 
 
     # ---------------------- GUI / anomalies mode ----------------------
+
     if anomalies == "single":
+        # Launch anomaly GUI for single point selection
         idx, x, y, csv_path = launch_anomaly_gui(
             image_data_list,
             orig_sizes,
@@ -380,11 +453,19 @@ def main(algorithm=None, anomalies=None, homographies_path=None):
             matching_anomalies.main(data, csv_path)
 
     elif anomalies == "batch":
+        # Launch batch anomaly processing
         anomalies_batch.main(image_data_list)
 
     else:
-        idx, x, y = launch_canvas_gui( image_data_list, orig_sizes)
-        data = build_correspondences_from_pixels(idx, x, y, image_data_list, H_dict, node_connected_component, shortest_path)
+        # Default: launch canvas GUI for user interaction
+        idx, x, y = launch_canvas_gui(image_data_list, orig_sizes)
+        data = build_correspondences_from_pixels(
+            idx, x, y,
+            image_data_list,
+            H_dict,
+            node_connected_component,
+            shortest_path
+        )
         avg_gps.main(data)
 
 
