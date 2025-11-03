@@ -2,20 +2,18 @@ import cv2
 import numpy as np
 import csv
 from pathlib import Path
-
-
-from tkinter.filedialog import askopenfilenames, askopenfilename
 import math
 import time
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import argparse
 import anomalies_batch
-
-
-
-
+from gui_canvas import launch_canvas_gui
+from gui_anomalies import launch_anomaly_gui
+import avg_gps
+import matching_anomalies
+from tkinter.filedialog import askopenfilename, askopenfilenames
+from collections import deque
 
 # ---------------------- Utility Functions ----------------------
 def haversine(lat1, lon1, lat2, lon2):
@@ -47,7 +45,12 @@ def print_progress(current, total, stage_name, last_print=[-1], lock=None):
 
 
 # ---------------------- Metadata / CSV ----------------------
-def extract_metadata_from_csv(img_paths):
+def extract_metadata_from_csv():
+    img_paths = askopenfilenames(title="Select images", filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff")])
+    if not img_paths:
+        print("No images selected.")
+        return []
+
     folder = Path(img_paths[0]).parent
     csv_files = list(folder.glob("*.csv"))
     if len(csv_files) != 1:
@@ -79,7 +82,11 @@ def extract_metadata_from_csv(img_paths):
     for idx, path in enumerate(img_paths):
         fname = os.path.basename(path)
         meta = metadata_dict.get(fname)
-        w, h = cv2.imread(path).shape[1], cv2.imread(path).shape[0]
+        img = cv2.imread(path)
+        if img is None:
+            print(f"Warning: could not read {path}")
+            continue
+        w, h = img.shape[1], img.shape[0]
         entry = {
             "image_index": idx,
             "image_path": os.path.abspath(path),
@@ -134,7 +141,7 @@ def build_correspondences_from_pixels(idx, x, y, image_data_list, H_dict, node_c
 
 
 # ---------------------- Main Function ----------------------
-def main(algorithm=None, anomalies= None):
+def main(algorithm=None, anomalies=None):
     threshold_meters = 40.0
     ratio_test = 0.7
     ransac_thresh = 4.0
@@ -144,15 +151,11 @@ def main(algorithm=None, anomalies= None):
     progress_lock = threading.Lock()
     start_time = time.time()
 
-    # ---------------------- GUI File Selection ----------------------
-    
-    img_paths = askopenfilenames(title="Select images", filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff")])
-    if not img_paths:
-        print("No images selected.")
+    # ---------------------- Load images + metadata ----------------------
+    image_data_list = extract_metadata_from_csv()
+    if not image_data_list:
         return
-    print(f"Selected {len(img_paths)} images.")
 
-    image_data_list = extract_metadata_from_csv(img_paths)
     images, orig_sizes, gps_positions = [], [], []
     for entry in image_data_list:
         img = cv2.imread(entry["image_path"])
@@ -169,7 +172,7 @@ def main(algorithm=None, anomalies= None):
 
     # ---------------------- Detector ----------------------
     if algorithm is None:
-        algorithm = "BRISK" if img_paths[0].lower().endswith((".tif", ".tiff")) else "SIFT"
+        algorithm = "BRISK" if image_data_list[0]["image_path"].lower().endswith((".tif", ".tiff")) else "SIFT"
 
     if algorithm == "SIFT":
         detector = cv2.SIFT_create(); descriptor_type = "float"
@@ -309,7 +312,6 @@ def main(algorithm=None, anomalies= None):
     def shortest_path(u,v):
         if u==v: return [u]
         if u not in adj: return None
-        from collections import deque
         q = deque([u]); parent={u:None}
         while q:
             cur = q.popleft()
@@ -325,19 +327,31 @@ def main(algorithm=None, anomalies= None):
         return None
 
     # ---------------------- GUI / anomalies mode ----------------------
-    if anomalies== "single":
-        # Launch anomaly GUI
-        from gui_anomalies import launch_anomaly_gui
-        launch_anomaly_gui( img_paths,orig_sizes, image_data_list, H_dict, node_connected_component, shortest_path)
-    
+    if anomalies == "single":
+        idx, x, y, csv_path = launch_anomaly_gui(
+            image_data_list,
+            orig_sizes,
+            image_data_list
+        )
+        data = build_correspondences_from_pixels(
+            idx, x, y,
+            image_data_list=image_data_list,
+            H_dict=H_dict,
+            node_connected_component=node_connected_component,
+            shortest_path=shortest_path
+        )
+        avg_gps.main(data)
+        if csv_path:
+            matching_anomalies.main(data, csv_path)
+
     elif anomalies == "batch":
         anomalies_batch.main(image_data_list)
-    
 
     else:
-        # Launch canvas GUI
-        from gui_canvas import launch_canvas_gui
-        launch_canvas_gui( img_paths, orig_sizes, image_data_list, H_dict, node_connected_component, shortest_path)
+        idx, x, y = launch_canvas_gui( image_data_list, orig_sizes)
+        data = build_correspondences_from_pixels(idx, x, y, image_data_list, H_dict, node_connected_component, shortest_path)
+        avg_gps.main(data)
+
 
 # ---------------------- CLI ----------------------
 if __name__ == "__main__":
@@ -359,7 +373,6 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     algorithm = args.algorithm.upper() if args.algorithm else None
-    anomalies_mode = args.anomalies  # will be 'none', 'single', or 'batch'
+    anomalies_mode = args.anomalies
 
     main(algorithm, anomalies=anomalies_mode)
-
