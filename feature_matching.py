@@ -14,6 +14,7 @@ import avg_gps
 import matching_anomalies
 from tkinter.filedialog import askopenfilename, askopenfilenames
 from collections import deque
+import pickle
 
 # ---------------------- Utility Functions ----------------------
 def haversine(lat1, lon1, lat2, lon2):
@@ -42,6 +43,25 @@ def print_progress(current, total, stage_name, last_print=[-1], lock=None):
         if percent // 5 != last_print[0] or current == total:
             print(f"[{stage_name}] Progress: {percent}% ({current}/{total})")
             last_print[0] = percent // 5
+
+
+
+def save_homographies(H_dict, image_data_list, filename="homographies.pkl"):
+    data_to_save = {
+        "H_dict": H_dict,
+        "image_data_list": image_data_list
+    }
+    with open(filename, "wb") as f:
+        pickle.dump(data_to_save, f)
+    print(f"Saved homographies and image data to {filename}")
+
+
+def load_homographies(filename="homographies.pkl"):
+    with open(filename, "rb") as f:
+        data = pickle.load(f)
+    print(f"Loaded homographies and image data from {filename}")
+    return data["H_dict"], data["image_data_list"]
+
 
 
 # ---------------------- Metadata / CSV ----------------------
@@ -141,7 +161,7 @@ def build_correspondences_from_pixels(idx, x, y, image_data_list, H_dict, node_c
 
 
 # ---------------------- Main Function ----------------------
-def main(algorithm=None, anomalies=None):
+def main(algorithm=None, anomalies=None, homographies_path=None):
     threshold_meters = 40.0
     ratio_test = 0.7
     ransac_thresh = 4.0
@@ -150,25 +170,37 @@ def main(algorithm=None, anomalies=None):
     max_workers = 8
     progress_lock = threading.Lock()
     start_time = time.time()
+    match_cache, H_dict, H_inliers = {}, {}, {}
 
-    # ---------------------- Load images + metadata ----------------------
-    image_data_list = extract_metadata_from_csv()
-    if not image_data_list:
-        return
 
-    images, orig_sizes, gps_positions = [], [], []
-    for entry in image_data_list:
-        img = cv2.imread(entry["image_path"])
-        if img is None:
-            print(f"Warning: could not read {entry['image_path']}")
-            continue
-        images.append(img)
-        orig_sizes.append((img.shape[1], img.shape[0]))
-        gps_positions.append(entry["gps"])
+    if homographies_path:
+        # Load precomputed homographies + image data
+        H_dict, image_data_list = load_homographies(homographies_path)
+        images = [cv2.imread(entry["image_path"]) for entry in image_data_list]
+        orig_sizes = [entry["image_size"] for entry in image_data_list]
+        gps_positions = [entry["gps"] for entry in image_data_list]
+        print("Using loaded homographies and image data. Skipping image selection.")
 
-    if not images:
-        print("No valid images loaded.")
-        return
+    else:
+        # Extract image paths + metadata via GUI
+        image_data_list = extract_metadata_from_csv()
+        if not image_data_list:
+            return
+
+        images, orig_sizes, gps_positions = [], [], []
+        for entry in image_data_list:
+            img = cv2.imread(entry["image_path"])
+            if img is None:
+                print(f"Warning: could not read {entry['image_path']}")
+                continue
+            images.append(img)
+            orig_sizes.append((img.shape[1], img.shape[0]))
+            gps_positions.append(entry["gps"])
+
+        if not images:
+            print("No valid images loaded.")
+            return
+
 
     # ---------------------- Detector ----------------------
     if algorithm is None:
@@ -227,7 +259,6 @@ def main(algorithm=None, anomalies=None):
     print(f"Total pairs to attempt: {len(neighbors)}")
 
     # ---------------------- Matching & Homography ----------------------
-    match_cache, H_dict, H_inliers = {}, {}, {}
 
     def match_and_filter_pairs(i, j):
         key = (i, j)
@@ -325,6 +356,10 @@ def main(algorithm=None, anomalies=None):
                         path.reverse(); return path
                     q.append(nb)
         return None
+    
+    if not homographies_path:
+         save_homographies(H_dict, image_data_list)
+
 
     # ---------------------- GUI / anomalies mode ----------------------
     if anomalies == "single":
@@ -371,8 +406,16 @@ if __name__ == "__main__":
         help="Anomalies mode: 'none' (default), 'single', or 'batch'"
     )
 
+    parser.add_argument(
+        "-l", "--load-homographies",
+        type=str,
+        default=None,
+        help="Load homographies and image data from a file instead of computing them"
+    )
+
     args = parser.parse_args()
     algorithm = args.algorithm.upper() if args.algorithm else None
     anomalies_mode = args.anomalies
+    homographies_path = args.load_homographies
 
-    main(algorithm, anomalies=anomalies_mode)
+    main(algorithm, anomalies=anomalies_mode, homographies_path=homographies_path)
