@@ -1,5 +1,3 @@
-# gui_canvas.py
-
 import threading
 import queue
 from collections import OrderedDict
@@ -7,234 +5,237 @@ from tkinter import Tk, Canvas, Scrollbar, LEFT, RIGHT, Y, NW
 from PIL import Image, ImageTk
 import cv2
 
+class CanvasGUI:
+    def __init__(self, image_data_list, orig_sizes, click_callback=None):
+        self.image_data_list = image_data_list
+        self.orig_sizes = orig_sizes
+        self.click_callback = click_callback
 
-def launch_canvas_gui(image_data_list, orig_sizes):
-    """
-    Displays images in a scrollable Tkinter canvas grid.
-    Lets user click a pixel and returns (image_index, x, y) in original coordinates.
+        # Markers
+        self.red_marker_items = []
+        self.yellow_marker_items = []
 
-    Args:
-        image_data_list: list of dictionaries containing image metadata (including paths)
-        orig_sizes: list of tuples (width, height) for each image
+        # Last click result
+        self.result = {"idx": None, "x": None, "y": None}
 
-    Returns:
-        idx: index of the clicked image
-        x, y: coordinates in original image size
-    """
-    # Store results to return after GUI closes
-    result = {"idx": None, "x": None, "y": None}
+        # Tkinter setup
+        self.root = Tk()
+        self.root.title("Images Grid (Canvas Viewer)")
+        self.canvas_w, self.canvas_h = 1400, 800
+        self.canvas = Canvas(self.root, width=self.canvas_w, height=self.canvas_h, bg="black")
+        scrollbar = Scrollbar(self.root, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+        self.canvas.pack(side=LEFT, fill="both", expand=1)
+        scrollbar.pack(side=RIGHT, fill=Y)
 
-    # ----------------- Tk root window -----------------
-    root = Tk()
-    root.title("Images Grid (Canvas Viewer)")
+        # Layout
+        self.cols = 6
+        self.thumb_size = 200
+        self.padding = 10
+        self.text_height = 18
+        self.row_height = self.thumb_size + self.text_height + self.padding
 
-    # ----------------- Canvas setup -----------------
-    canvas_w, canvas_h = 1400, 800
-    canvas_side = Canvas(root, width=canvas_w, height=canvas_h, bg="black")
-    scrollbar = Scrollbar(root, orient="vertical", command=canvas_side.yview)
-    canvas_side.configure(yscrollcommand=scrollbar.set)
-    canvas_side.pack(side=LEFT, fill="both", expand=1)
-    scrollbar.pack(side=RIGHT, fill=Y)
+        # Caches
+        self.pil_cache = OrderedDict()
+        self.photo_cache = {}
+        self.MAX_CACHE_ITEMS = 200
+        self.cache_lock = threading.Lock()
 
-    # ----------------- Layout parameters -----------------
-    cols = 6  # number of columns in grid
-    thumb_size = 200  # maximum thumbnail width/height
-    padding = 10  # spacing between images
-    text_height = 18  # height of text labels
-    row_height = thumb_size + text_height + padding  # total row height
+        # Loader queues
+        self.load_queue = queue.Queue()
+        self.result_queue = queue.Queue()
+        self.stop_event = threading.Event()
 
-    # ----------------- Caches -----------------
-    pil_cache = OrderedDict()  # stores loaded PIL images
-    photo_cache = {}  # stores ImageTk.PhotoImage objects
-    MAX_CACHE_ITEMS = 200  # limit for cache
-    cache_lock = threading.Lock()  # for thread-safe access
+        # Compute positions
+        self.img_positions = []
+        for i, (w, h) in enumerate(orig_sizes):
+            scale = min(self.thumb_size / h, self.thumb_size / w)
+            disp_w, disp_h = int(w * scale), int(h * scale)
+            col = i % self.cols
+            row = i // self.cols
+            x = self.padding + col * (self.thumb_size + self.padding)
+            y = self.padding + row * self.row_height
+            self.img_positions.append((x, y, scale, disp_w, disp_h))
 
-    # ----------------- Loader queues -----------------
-    load_queue = queue.Queue()
-    result_queue = queue.Queue()
-    stop_event = threading.Event()  # signal threads to stop
+        n_rows = (len(image_data_list) + self.cols - 1) // self.cols
+        total_height = self.padding + n_rows * self.row_height
+        total_width = self.padding + self.cols * (self.thumb_size + self.padding)
+        self.canvas.config(scrollregion=(0, 0, total_width, total_height))
 
-    # ----------------- Precompute image positions -----------------
-    img_positions = []
-    for i, (w, h) in enumerate(orig_sizes):
-        scale = min(thumb_size / h, thumb_size / w)  # scale to fit thumbnail
-        disp_w, disp_h = int(w * scale), int(h * scale)
-        col = i % cols
-        row = i // cols
-        x = padding + col * (thumb_size + padding)
-        y = padding + row * row_height
-        img_positions.append((x, y, scale, disp_w, disp_h))
+        # Drawn items
+        self.drawn_image_items = {}
+        self.drawn_text_items = {}
 
-    n_rows = (len(image_data_list) + cols - 1) // cols
-    total_height = padding + n_rows * row_height
-    total_width = padding + cols * (thumb_size + padding)
-    canvas_side.config(scrollregion=(0, 0, total_width, total_height))
+        # Start loader threads
+        for _ in range(max(2, min(8, len(image_data_list)))):
+            t = threading.Thread(target=self.loader_worker, daemon=True)
+            t.start()
 
-    # ----------------- Helper: visible indices -----------------
-    def get_visible_indices():
-        """
-        Return indices of images currently visible on the canvas + margin.
-        Used to decide which images to load in background.
-        """
-        y0 = canvas_side.canvasy(0)
-        y1 = canvas_side.canvasy(canvas_side.winfo_height())
-        margin = row_height * 2  # extra rows above/below
-        top_row = max(0, int((y0 - margin) // row_height))
-        bottom_row = min(n_rows - 1, int((y1 + margin) // row_height))
-        indices = []
-        for r in range(top_row, bottom_row + 1):
-            start = r * cols
-            end = min(len(image_data_list), start + cols)
-            indices.extend(range(start, end))
-        return set(indices)
+        # Bind click
+        self.canvas.bind("<Button-1>", self.on_canvas_click)
+        self.enqueue_visible_and_neighbors()
+        self.root.after(100, self.periodic_update)
 
-    # ----------------- Background image loader -----------------
-    def loader_worker():
-        """
-        Thread function: load images from disk, resize, convert to PIL.
-        Results put in result_queue.
-        """
-        while not stop_event.is_set():
+    # ----------------- Loader -----------------
+    def loader_worker(self):
+        while not self.stop_event.is_set():
             try:
-                idx = load_queue.get(timeout=0.5)
+                idx = self.load_queue.get(timeout=0.5)
             except queue.Empty:
                 continue
-            with cache_lock:
-                if idx in pil_cache:
-                    load_queue.task_done()
+            with self.cache_lock:
+                if idx in self.pil_cache:
+                    self.load_queue.task_done()
                     continue
-            path = image_data_list[idx]["image_path"]
+            path = self.image_data_list[idx]["image_path"]
             try:
                 bgr = cv2.imread(path)
                 if bgr is None:
-                    load_queue.task_done()
+                    self.load_queue.task_done()
                     continue
-                _, _, scale, disp_w, disp_h = img_positions[idx]
+                _, _, scale, disp_w, disp_h = self.img_positions[idx]
                 resized = cv2.resize(bgr, (disp_w, disp_h), interpolation=cv2.INTER_AREA)
                 rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
                 pil_img = Image.fromarray(rgb)
-                result_queue.put((idx, pil_img))
+                self.result_queue.put((idx, pil_img))
             except Exception as e:
                 print(f"Loader error for index {idx}: {e}")
             finally:
-                load_queue.task_done()
+                self.load_queue.task_done()
 
-    # Start multiple loader threads
-    for _ in range(max(2, min(8, len(image_data_list)))):
-        t = threading.Thread(target=loader_worker, daemon=True)
-        t.start()
+    # ----------------- Click -----------------
+    def on_canvas_click(self, event):
+        x_c = self.canvas.canvasx(event.x)
+        y_c = self.canvas.canvasy(event.y)
+        for idx, (x, y, scale, disp_w, disp_h) in enumerate(self.img_positions):
+            if x <= x_c <= x + disp_w and y <= y_c <= y + disp_h:
+                x_orig = (x_c - x) / scale
+                y_orig = (y_c - y) / scale
+                self.handle_click(idx, x_orig, y_orig)
+                break
 
-    # ----------------- Enqueue images to load -----------------
-    def enqueue_visible_and_neighbors():
-        """
-        Enqueue images currently visible or in neighboring rows for loading.
-        """
-        vis = get_visible_indices()
+    def handle_click(self, idx, x_orig, y_orig):
+        # Remove old red markers
+        for m in self.red_marker_items:
+            self.canvas.delete(m)
+        self.red_marker_items.clear()
+
+        # Draw new red marker
+        x_canvas, y_canvas, scale, _, _ = self.img_positions[idx]
+        m_red = self.create_marker_canvas(x_canvas + x_orig * scale,
+                                          y_canvas + y_orig * scale, color="red")
+        self.red_marker_items.append(m_red)
+
+        # Save result
+        self.result["idx"], self.result["x"], self.result["y"] = idx, x_orig, y_orig
+
+        # Call click callback if provided
+        if self.click_callback:
+            def worker():
+                try:
+                    data = self.click_callback(idx, x_orig, y_orig, self)
+                    self.draw_correspondences(data)
+                except Exception as e:
+                    print(f"click_callback error: {e}")
+            threading.Thread(target=worker, daemon=True).start()
+
+    # ----------------- Draw helpers -----------------
+    def create_marker_canvas(self, x, y, color="red", size=6):
+        half = size / 2
+        return self.canvas.create_rectangle(x - half, y - half, x + half, y + half, fill=color, outline=color)
+
+    def draw_canvas_image(self, idx, photo):
+        if idx in self.drawn_image_items:
+            self.canvas.delete(self.drawn_image_items[idx])
+        x, y, scale, disp_w, disp_h = self.img_positions[idx]
+        img_id = self.canvas.create_image(x, y, image=photo, anchor=NW)
+        self.drawn_image_items[idx] = img_id
+        name = self.image_data_list[idx]["image_path"].split("/")[-1].rsplit(".", 1)[0]
+        if idx in self.drawn_text_items:
+            self.canvas.delete(self.drawn_text_items[idx])
+        tid = self.canvas.create_text(x + disp_w / 2, y + disp_h + 12, text=name, fill="white")
+        self.drawn_text_items[idx] = tid
+
+    def draw_correspondences(self, data):
+        # Clear old yellow markers
+        for m in self.yellow_marker_items:
+            self.canvas.delete(m)
+        self.yellow_marker_items.clear()
+
+        # Draw yellow markers
+        for entry in data:
+            other_idx = entry["image_index"]
+            x_other = entry["pixel_x"]
+            y_other = entry["pixel_y"]
+            if other_idx == self.result["idx"]:
+                continue
+            x_img, y_img, sc, disp_w, disp_h = self.img_positions[other_idx]
+            x_disp, y_disp = x_other * sc, y_other * sc
+            if 0 <= x_disp <= disp_w and 0 <= y_disp <= disp_h:
+                mx = self.create_marker_canvas(x_img + x_disp, y_img + y_disp, color="yellow")
+                self.yellow_marker_items.append(mx)
+
+    # ----------------- Visible images -----------------
+    def get_visible_indices(self):
+        y0 = self.canvas.canvasy(0)
+        y1 = self.canvas.canvasy(self.canvas.winfo_height())
+        margin = self.row_height * 2
+        top_row = max(0, int((y0 - margin) // self.row_height))
+        bottom_row = min((len(self.image_data_list) + self.cols - 1) // self.cols - 1,
+                         int((y1 + margin) // self.row_height))
+        indices = []
+        for r in range(top_row, bottom_row + 1):
+            start = r * self.cols
+            end = min(len(self.image_data_list), start + self.cols)
+            indices.extend(range(start, end))
+        return set(indices)
+
+    def enqueue_visible_and_neighbors(self):
+        vis = self.get_visible_indices()
         extra = set()
+        n_rows = (len(self.image_data_list) + self.cols - 1) // self.cols
         for idx in vis:
-            row = idx // cols
+            row = idx // self.cols
             for r in range(max(0, row - 1), min(n_rows, row + 2)):
-                start = r * cols
-                extra.update(range(start, min(start + cols, len(image_data_list))))
+                start = r * self.cols
+                extra.update(range(start, min(start + self.cols, len(self.image_data_list))))
         for idx in extra:
-            with cache_lock:
-                if idx not in pil_cache:
+            with self.cache_lock:
+                if idx not in self.pil_cache:
                     try:
-                        load_queue.put_nowait(idx)
+                        self.load_queue.put_nowait(idx)
                     except queue.Full:
                         pass
 
-    # ----------------- Drawing -----------------
-    drawn_image_items = {}  # canvas IDs for images
-    drawn_text_items = {}  # canvas IDs for labels
-    marker_items = []  # red marker rectangles
-
-    def draw_canvas_image(idx, photo):
-        """Draw a single image thumbnail and label on the canvas."""
-        if idx in drawn_image_items:
-            canvas_side.delete(drawn_image_items[idx])
-        x, y, scale, disp_w, disp_h = img_positions[idx]
-        img_id = canvas_side.create_image(x, y, image=photo, anchor=NW)
-        drawn_image_items[idx] = img_id
-        name = image_data_list[idx]["image_path"].split("/")[-1].rsplit(".", 1)[0]
-        tid = canvas_side.create_text(x + disp_w / 2, y + disp_h + 12, text=name, fill="white")
-        drawn_text_items[idx] = tid
-
-    def create_marker_canvas(x, y, color="red", size=6):
-        """Draw a small square marker at (x,y)."""
-        half = size / 2
-        return canvas_side.create_rectangle(x - half, y - half, x + half, y + half, fill=color, outline=color)
-
-    # ----------------- Process loaded images -----------------
-    def process_loader_results():
-        """Move images from result_queue into caches and draw if visible."""
+    def process_loader_results(self):
         while True:
             try:
-                idx, pil_img = result_queue.get_nowait()
+                idx, pil_img = self.result_queue.get_nowait()
             except queue.Empty:
                 break
-            with cache_lock:
-                pil_cache[idx] = pil_img
-                pil_cache.move_to_end(idx)
-                while len(pil_cache) > MAX_CACHE_ITEMS:
-                    pil_cache.popitem(last=False)
+            with self.cache_lock:
+                self.pil_cache[idx] = pil_img
+                self.pil_cache.move_to_end(idx)
+                while len(self.pil_cache) > self.MAX_CACHE_ITEMS:
+                    self.pil_cache.popitem(last=False)
                 photo = ImageTk.PhotoImage(pil_img)
-                photo_cache[idx] = photo
-                if idx in get_visible_indices():
-                    draw_canvas_image(idx, photo)
-            result_queue.task_done()
+                self.photo_cache[idx] = photo
+                if idx in self.get_visible_indices():
+                    self.draw_canvas_image(idx, photo)
+            self.result_queue.task_done()
 
-    # ----------------- Click handling -----------------
-    def on_canvas_click(event):
-        """Detect which image was clicked, compute original coordinates, save result."""
-        x_c = canvas_side.canvasx(event.x)
-        y_c = canvas_side.canvasy(event.y)
-        for idx, (x, y, scale, disp_w, disp_h) in enumerate(img_positions):
-            if x <= x_c <= x + disp_w and y <= y_c <= y + disp_h:
-                local_x_scaled = (x_c - x)
-                local_y_scaled = (y_c - y)
-                x_orig = local_x_scaled / scale
-                y_orig = local_y_scaled / scale
-
-                # Save result
-                result["idx"], result["x"], result["y"] = idx, x_orig, y_orig
-
-                # Show a red marker
-                for m in marker_items:
-                    canvas_side.delete(m)
-                marker_items.clear()
-                marker_items.append(create_marker_canvas(x, y, color="red"))
-
-                root.after(200, root.destroy)
-                break
-
-    # ----------------- Periodic update -----------------
-    def periodic_update():
-        """Enqueue visible images and process loader results periodically."""
-        enqueue_visible_and_neighbors()
-        process_loader_results()
-        vis = get_visible_indices()
+    def periodic_update(self):
+        self.enqueue_visible_and_neighbors()
+        self.process_loader_results()
+        vis = self.get_visible_indices()
         for idx in vis:
-            with cache_lock:
-                if idx in photo_cache and idx not in drawn_image_items:
-                    draw_canvas_image(idx, photo_cache[idx])
-        root.after(300, periodic_update)
+            with self.cache_lock:
+                if idx in self.photo_cache and idx not in self.drawn_image_items:
+                    self.draw_canvas_image(idx, self.photo_cache[idx])
+        self.root.after(300, self.periodic_update)
 
-    enqueue_visible_and_neighbors()
-    canvas_side.bind("<Button-1>", on_canvas_click)
-    root.after(100, periodic_update)
-
-    # ----------------- Window close -----------------
-    def on_close():
-        """Stop loader threads and close window."""
-        stop_event.set()
-        root.destroy()
-
-    root.protocol("WM_DELETE_WINDOW", on_close)
-    root.mainloop()
-
-    # Return result
-    if result["idx"] is not None:
-        return result["idx"], result["x"], result["y"]
-    else:
-        return None, None, None
+    # ----------------- Run -----------------
+    def run(self):
+        self.root.protocol("WM_DELETE_WINDOW", self.root.destroy)
+        self.root.after(100, self.periodic_update)
+        self.root.mainloop()
