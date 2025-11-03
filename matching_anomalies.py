@@ -4,7 +4,6 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk, ImageDraw
 import pandas as pd
-import cv2
 
 # ==== Configuration ====
 MAX_DEVIATION_FRACTION = 0.5  # Fraction of bounding box size allowed for deviation when matching
