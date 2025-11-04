@@ -1,23 +1,22 @@
-# batch_anomalies.py
 import os
 import csv
 from collections import Counter
 import pandas as pd
 import tkinter as tk
 from tkinter import filedialog, messagebox
-import plot_cad  
-import avg_gps
 import matching_anomalies
+import avg_gps
+import georef_new
+import plot_cad
+
+MAX_DISTANCE_M = 15.0
 
 def main(image_data_list, output_csv_path=None):
     """
-    Batch process anomalies using a CSV selected by the user, with progress updates:
-    - image_data_list: list of dicts, each with at least "image_path"
-    - output_csv_path: optional path to save output CSV
+    Batch processing of anomalies with distance filtering, CSV export, and CAD map.
     """
-    # Ask user for the anomaly CSV
     root = tk.Tk()
-    root.withdraw()  # Hide main window
+    root.withdraw()
     csv_path = filedialog.askopenfilename(
         title="Select anomaly CSV file",
         filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
@@ -31,81 +30,67 @@ def main(image_data_list, output_csv_path=None):
         processed_anomalies = set()
         output_rows = []
 
-        # Quick lookup for images
         data_by_name = {os.path.basename(e["image_path"]): e for e in image_data_list}
-
+        mapper = georef_new.DroneMapper()
         total_rows = len(df_anom)
         print(f"Starting batch processing for {total_rows} anomalies...")
 
-        for idx, row in enumerate(df_anom, start=1):
+        for idx, row in df_anom.iterrows():
             image_name = str(row["image"]).strip()
             anomaly_type = str(row.get("anomaly", "unknown")).strip()
             key = (image_name, anomaly_type)
-            if key in processed_anomalies:
+            if key in processed_anomalies or image_name not in data_by_name:
                 continue
 
-            # Skip if image not in data
-            if image_name not in data_by_name:
-                continue
+            print(f"[{idx+1}/{total_rows}] Processing anomaly '{anomaly_type}' in image '{image_name}'")
 
-            # Progress update
-            print(f"[{idx}/{total_rows}] Processing anomaly '{anomaly_type}' in image '{image_name}'")
-
-            # Max deviation from bbox
             max_dev = matching_anomalies.compute_max_deviation_from_bbox(row)
 
-            # Find all matching anomalies
-            data_point = {
-                image_name: {
-                    "pixel_x": float(row["center_x"]),
-                    "pixel_y": float(row["center_y"])
-                }
-            }
-            matching_rows = matching_anomalies.get_matching_rows_for_image(
-                df_anom, image_name, max_dev, "image", data_point
-            )
+            data_point = {image_name: {"pixel_x": float(row["center_x"]), "pixel_y": float(row["center_y"])}}
+            matching_rows = matching_anomalies.get_matching_rows_for_image(df_anom, image_name, max_dev, "image", data_point)
             if not matching_rows:
                 matching_rows = [row]
 
-            # Prepare data for avg_gps
+            # avg_gps calculation
             data_for_avg = []
             for r in matching_rows:
-                img_path = next(
-                    (e["image_path"] for e in image_data_list if os.path.basename(e["image_path"]) == image_name),
-                    None
-                )
+                img_path = next((e["image_path"] for e in image_data_list if os.path.basename(e["image_path"]) == image_name), None)
                 if img_path:
-                    data_for_avg.append({
-                        "image_path": img_path,
-                        "pixel_x": float(r["center_x"]),
-                        "pixel_y": float(r["center_y"])
-                    })
+                    data_for_avg.append({"image_path": img_path, "pixel_x": float(r["center_x"]), "pixel_y": float(r["center_y"])})
 
-            # Call avg_gps
-            try:
-                avg_result = avg_gps.main(data_for_avg)
-            except Exception as e:
-                print(f"avg_gps error for {image_name}: {e}")
-                avg_result = {"lat": None, "lon": None}
+            avg_result = avg_gps.main(data_for_avg)
+
+            ref_gps = None
+            for d in data_for_avg:
+                if 'target_gps' in d:
+                    ref_gps = d['target_gps']
+                    break
+            if ref_gps is None and avg_result.get("lat") is not None:
+                ref_gps = (avg_result["lat"], avg_result["lon"])
+
+            if ref_gps is None:
+                filtered_rows = matching_rows
+            else:
+                filtered_rows = matching_anomalies.filter_rows_by_geodistance(
+                    matching_rows, image_data_list, image_name, ref_gps, mapper, MAX_DISTANCE_M, avg_gps.haversine
+                )
+
+            if not filtered_rows:
+                print(f"No valid matches within {MAX_DISTANCE_M} m for {image_name}, skipping")
+                continue
 
             # Majority anomaly type
-            types = [str(r.get("anomaly", "unknown")) for r in matching_rows]
+            types = [str(r.get("anomaly", "unknown")) for r in filtered_rows]
             majority_type = Counter(types).most_common(1)[0][0]
 
-            # Example image (most centered)
             center_row = min(
-                matching_rows,
-                key=lambda r: ((float(r["center_x"]) - float(row["center_x"]))**2 +
-                               (float(r["center_y"]) - float(row["center_y"]))**2)
+                filtered_rows,
+                key=lambda r: ((float(r["center_x"]) - float(row["center_x"]))**2 + (float(r["center_y"]) - float(row["center_y"]))**2)
             )
-            example_img_path = next(
-                (e["image_path"] for e in image_data_list if os.path.basename(e["image_path"]) == image_name),
-                None
-            )
+            example_img_path = next((e["image_path"] for e in image_data_list if os.path.basename(e["image_path"]) == image_name), None)
             example_pixel_x = float(center_row["center_x"])
             example_pixel_y = float(center_row["center_y"])
 
-            # Append to output
             output_rows.append({
                 "anomaly_type": majority_type,
                 "avg_lat": avg_result.get("lat"),
@@ -114,14 +99,10 @@ def main(image_data_list, output_csv_path=None):
                 "pixel_x": example_pixel_x,
                 "pixel_y": example_pixel_y
             })
-
             processed_anomalies.add(key)
 
-        # Determine output CSV path
         if output_csv_path is None:
             output_csv_path = os.path.splitext(csv_path)[0] + "_georeferenced.csv"
-
-        # Save results
         keys = ["anomaly_type", "avg_lat", "avg_lon", "example_image", "pixel_x", "pixel_y"]
         with open(output_csv_path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=keys)
@@ -131,22 +112,10 @@ def main(image_data_list, output_csv_path=None):
         print(f"Batch processing done. Results saved to: {output_csv_path}")
         messagebox.showinfo("Batch Processing Done", f"Results saved to: {output_csv_path}")
 
-        # --- Prepare data for CAD map ---
-        target_points = []
-        for row in output_rows:
-            lat = row.get("avg_lat")
-            lon = row.get("avg_lon")
-            if lat is not None and lon is not None:
-                target_points.append({
-                    "target_gps": (lat, lon),
-                    "score": 1.0  # Optional: assign a uniform score or compute based on confidence
-                })
-
+        # CAD Map
+        target_points = [{"target_gps": (row["avg_lat"], row["avg_lon"]), "score": 1.0} for row in output_rows if row["avg_lat"] is not None]
         if target_points:
-           
-            # Use first target as central target
-            central_target = (float(target_points[0]["target_gps"][0]),
-                            float(target_points[0]["target_gps"][1]))
+            central_target = (float(target_points[0]["target_gps"][0]), float(target_points[0]["target_gps"][1]))
             plot_cad.plot_cad_map(
                 target_gps=central_target,
                 points=target_points,
