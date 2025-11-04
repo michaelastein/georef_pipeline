@@ -11,7 +11,6 @@ import anomalies_batch
 import gui_canvas
 from gui_anomalies import launch_anomaly_gui
 import avg_gps
-import matching_anomalies
 from tkinter.filedialog import askopenfilename, askopenfilenames
 from collections import deque
 import pickle
@@ -462,6 +461,8 @@ def main(algorithm=None, anomalies=None, homographies_path=None):
         )
         avg_gps.main(data)
         if csv_path:
+            import matching_anomalies
+
             matching_anomalies.main(data, csv_path)
 
     elif anomalies == "batch":

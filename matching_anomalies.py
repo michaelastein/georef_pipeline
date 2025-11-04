@@ -1,52 +1,26 @@
+# matching_anomalies.py
 import os
-import traceback
-import tkinter as tk
-from tkinter import filedialog, messagebox
-from PIL import Image, ImageTk, ImageDraw
 import pandas as pd
+from collections import Counter
+from PIL import Image, ImageTk, ImageDraw
+import tkinter as tk
+import traceback
+import avg_gps
+import georef_new
 
-# ==== Configuration ====
-MAX_DEVIATION_FRACTION = 0.5  # Fraction of bounding box size allowed for deviation when matching
-GRID_COLUMNS = 4               # Number of columns in the GUI grid for displaying images
-THUMBNAIL_MAX_SIZE = 200       # Maximum width/height for thumbnail images in grid
+MAX_DEVIATION_FRACTION = 0.5
+THUMBNAIL_MAX_SIZE = 200
+GRID_COLUMNS = 4
+MAX_DISTANCE_M = 15.0
 
-# ==== Helpers ====
-
+# ---- Helpers ----
 def safe_float(x):
-    """
-    Safely convert a value to float.
-    Returns None if conversion fails.
-    """
     try:
         return float(x)
     except Exception:
         return None
 
-def find_exact_row_for_first_image(df, filename_col, filename, pixel_x, pixel_y):
-    """
-    Find the row in a dataframe corresponding to the first image based on filename
-    and pixel coordinates, allowing a small tolerance.
-    Returns the first matching row or None.
-    """
-    candidate_rows = df[df[filename_col].astype(str).str.strip() == filename]
-    if candidate_rows.empty:
-        return None
-
-    tol = 20  # tolerance in pixels
-    for _, r in candidate_rows.iterrows():
-        cx = safe_float(r.get("center_x"))
-        cy = safe_float(r.get("center_y"))
-        if cx is None or cy is None:
-            continue
-        if abs(cx - pixel_x) <= tol and abs(cy - pixel_y) <= tol:
-            return r
-    return None
-
 def compute_max_deviation_from_bbox(row, fraction=MAX_DEVIATION_FRACTION):
-    """
-    Compute the maximum allowed deviation based on bounding box size.
-    If bounding box is invalid, returns default of 10 pixels.
-    """
     xmin = safe_float(row.get("xmin"))
     xmax = safe_float(row.get("xmax"))
     ymin = safe_float(row.get("ymin"))
@@ -58,30 +32,19 @@ def compute_max_deviation_from_bbox(row, fraction=MAX_DEVIATION_FRACTION):
     return max(w, h) * fraction if max(w, h) > 0 else 10.0
 
 def get_matching_rows_for_image(df, image_name, max_dev, filename_col, data_by_name):
-    """
-    Find all rows in the dataframe corresponding to a given image that
-    match within the max deviation from the pixel coordinates in data_by_name.
-    """
     matches = []
     if filename_col not in df.columns:
         return matches
-
     candidate_rows = df[df[filename_col].astype(str).str.strip() == image_name]
     if candidate_rows.empty:
         return matches
 
     # Identify center coordinate columns
-    cx_col = None
-    cy_col = None
-    for c in df.columns:
-        if c.lower() in ("center_x", "centerx"):
-            cx_col = c
-        elif c.lower() in ("center_y", "centery"):
-            cy_col = c
+    cx_col = next((c for c in df.columns if c.lower() in ("center_x", "centerx")), None)
+    cy_col = next((c for c in df.columns if c.lower() in ("center_y", "centery")), None)
     if not cx_col or not cy_col:
         return matches
 
-    # Get target pixel from provided data
     target_x = data_by_name[image_name]["pixel_x"]
     target_y = data_by_name[image_name]["pixel_y"]
 
@@ -94,10 +57,32 @@ def get_matching_rows_for_image(df, image_name, max_dev, filename_col, data_by_n
             matches.append(row)
     return matches
 
+def filter_rows_by_geodistance(rows, image_data_list, image_name, ref_gps, max_distance=MAX_DISTANCE_M):
+    mapper = georef_new.DroneMapper()
+    filtered = []
+    img_entry = next((e for e in image_data_list if os.path.basename(e["image_path"]) == image_name), None)
+    if img_entry is None:
+        return []
+
+    for r in rows:
+        try:
+            cx = float(r.get("center_x", 0))
+            cy = float(r.get("center_y", 0))
+            target_gps = mapper.get_target_gps(
+                u=cx,
+                v=cy,
+                gps=img_entry['gps'],
+                angles=(img_entry['yaw'], img_entry['pitch'], img_entry['roll']),
+                image_size=img_entry['image_size']
+            )
+            dist = avg_gps.haversine(ref_gps[0], ref_gps[1], target_gps[0], target_gps[1])
+            if dist <= max_distance:
+                filtered.append(r)
+        except Exception as e:
+            print(f"Error computing GPS for {image_name} row: {e}")
+    return filtered
+
 def draw_bboxes_on_image(pil_img, rows_for_image, display_scale=1.0):
-    """
-    Draw bounding boxes from dataframe rows onto a PIL image.
-    """
     draw = ImageDraw.Draw(pil_img)
     for r in rows_for_image:
         xmin = safe_float(r.get("xmin"))
@@ -106,68 +91,43 @@ def draw_bboxes_on_image(pil_img, rows_for_image, display_scale=1.0):
         ymax = safe_float(r.get("ymax"))
         if None in (xmin, xmax, ymin, ymax):
             continue
-        box = (
-            xmin * display_scale,
-            ymin * display_scale,
-            xmax * display_scale,
-            ymax * display_scale
-        )
+        box = (xmin*display_scale, ymin*display_scale, xmax*display_scale, ymax*display_scale)
         line_w = max(2, int(max(1, pil_img.size[0] // 200)))
         draw.rectangle(box, outline="red", width=line_w)
     return pil_img
 
 def show_images_grid(image_items):
-    """
-    Display a grid of images with optional bounding boxes in a Tkinter GUI.
-    """
     root = tk.Tk()
     root.title("Matched Images Grid")
-
-    # --- Canvas with scrollbars ---
     canvas = tk.Canvas(root, bg="white")
     h_scroll = tk.Scrollbar(root, orient="horizontal", command=canvas.xview)
     v_scroll = tk.Scrollbar(root, orient="vertical", command=canvas.yview)
     canvas.configure(xscrollcommand=h_scroll.set, yscrollcommand=v_scroll.set)
-
     h_scroll.pack(side="bottom", fill="x")
     v_scroll.pack(side="right", fill="y")
     canvas.pack(side="left", fill="both", expand=True)
-
     frame = tk.Frame(canvas, bg="white")
     canvas.create_window((0, 0), window=frame, anchor="nw")
-
-    # Keep references to images to avoid garbage collection
     root.image_refs = []
 
     x, y = 10, 10
     max_row_height = 0
-
     for idx, item in enumerate(image_items):
         path = item["path"]
         rows_for_image = item.get("rows", [])
-
         try:
             pil_img = Image.open(path).convert("RGB")
-
-            # Draw bounding boxes if available
             if rows_for_image:
                 scale = min(1.0, THUMBNAIL_MAX_SIZE / max(pil_img.size))
                 pil_img = draw_bboxes_on_image(pil_img, rows_for_image, display_scale=scale)
             else:
                 scale = min(1.0, THUMBNAIL_MAX_SIZE / max(pil_img.size))
-
-            # Create thumbnail
             pil_img.thumbnail((THUMBNAIL_MAX_SIZE, THUMBNAIL_MAX_SIZE), Image.LANCZOS)
-
-            # Convert to Tkinter-compatible image
             tk_img = ImageTk.PhotoImage(pil_img, master=root)
             root.image_refs.append(tk_img)
-
-            # Create label for image with optional title
             lbl_img = tk.Label(frame, image=tk_img, text=item.get("title", os.path.basename(path)),
                                compound="top", bg="white", fg="black")
             lbl_img.place(x=x, y=y)
-
             w, h = pil_img.size
             max_row_height = max(max_row_height, h + 40)
             x += w + 20
@@ -175,103 +135,56 @@ def show_images_grid(image_items):
                 x = 10
                 y += max_row_height
                 max_row_height = 0
-
         except Exception as e:
             print(f"Error displaying {path}: {e}")
 
     frame.update_idletasks()
     canvas.config(scrollregion=canvas.bbox("all"))
-
     root.mainloop()
 
-# ==== Main Function ====
-def main(data, csv_path):
+
+# ---- Main Function ----
+def main(image_data_list, csv_path, max_distance_m=MAX_DISTANCE_M, show_gui=False):
     """
-    Main function to match images with CSV entries and optionally display a grid.
-    - data: list of image entry dicts containing 'image_path' and pixel info
-    - csv_path: path to CSV file with annotation data
+    Match anomalies for given images using CSV.
+    Prints image names that have matches.
+    Returns matched items list.
     """
     try:
-        if not isinstance(data, (list, tuple)) or len(data) == 0:
-            raise ValueError("`data` must be a non-empty list of image entry dicts.")
+        if not image_data_list or not csv_path:
+            print("No images or CSV path provided.")
+            return []
 
-        # Load CSV
         df = pd.read_csv(csv_path, dtype=str, low_memory=False)
-
-        # First image info
-        first_entry = data[0]
-        first_filename = os.path.basename(first_entry["image_path"])
-        first_pixel_x = float(first_entry["pixel_x"])
-        first_pixel_y = float(first_entry["pixel_y"])
-
-        # Determine which filename column to use
-        ext = os.path.splitext(first_filename)[1].lower()
-        if ext == ".tiff":
-            filename_col = "wiris_image"
-        elif ext == ".jpg":
-            filename_col = "pi_image"
-        else:
-            messagebox.showerror("Error", f"Unsupported first image extension '{ext}'.")
-            return
-
-        # Check filename exists in CSV
-        if filename_col not in df.columns or first_filename not in df[filename_col].astype(str).values:
-            messagebox.showerror("Error", f"Filename '{first_filename}' not found in column '{filename_col}'.")
-            return
-
-        # Find exact row for first image
-        first_row = find_exact_row_for_first_image(df, filename_col, first_filename, first_pixel_x, first_pixel_y)
-        if first_row is None:
-            messagebox.showerror("Error", f"No matching row found for {first_filename}.")
-            return
-
-        # Compute max deviation based on bounding box
-        max_deviation = compute_max_deviation_from_bbox(first_row)
-        data_by_name = {os.path.basename(e["image_path"]): e for e in data}
-
+        data_by_name = {os.path.basename(e["image_path"]): e for e in image_data_list}
         matched_items = []
 
-        # --- First image ---
-        first_matching_rows = []
-        candidate_rows = df[df[filename_col].astype(str).str.strip() == first_filename]
-        for _, r in candidate_rows.iterrows():
-            cx = safe_float(r.get("center_x"))
-            cy = safe_float(r.get("center_y"))
-            if cx is None or cy is None:
+        ref_gps = image_data_list[0].get("target_gps")  # optional first-image GPS
+
+        for entry in image_data_list:
+            image_name = os.path.basename(entry["image_path"])
+            max_dev = 10.0
+            candidate_row = df[df["image"].astype(str).str.strip() == image_name]
+            if not candidate_row.empty:
+                max_dev = compute_max_deviation_from_bbox(candidate_row.iloc[0])
+            rows = get_matching_rows_for_image(df, image_name, max_dev, "image", data_by_name)
+            if not rows:
                 continue
-            if abs(cx - first_pixel_x) <= max_deviation and abs(cy - first_pixel_y) <= max_deviation:
-                first_matching_rows.append(r)
-        if not first_matching_rows:
-            first_matching_rows = [first_row]
+            if ref_gps:
+                rows = filter_rows_by_geodistance(rows, image_data_list, image_name, ref_gps, max_distance=max_distance_m)
+            if not rows:
+                continue
+            matched_items.append({"title": image_name, "path": entry["image_path"], "rows": rows})
 
-        matched_items.append({
-            "title": f"(first) {first_filename}",
-            "path": first_entry["image_path"],
-            "rows": first_matching_rows
-        })
-
-        # --- Remaining images ---
-        for entry in data[1:]:
-            bname = os.path.basename(entry["image_path"])
-            rows = get_matching_rows_for_image(df, bname, max_deviation, filename_col, data_by_name)
-            if rows:
-                matched_items.append({
-                    "title": bname,
-                    "path": entry["image_path"],
-                    "rows": rows
-                })
-
-        if len(matched_items) == 1:
-            messagebox.showinfo("Result", "Only the first image found; no other matches.")
-
-        # Optionally display grid of matched images
-        # show_images_grid(matched_items)
-
-        # Print filenames of all matched items
+        # Print names of images with matches
         for item in matched_items:
-            print(os.path.basename(item["path"]))
+            print(item["title"])
 
+        if show_gui and matched_items:
+            show_images_grid(matched_items)
 
-    except Exception as e:
+        return matched_items
+
+    except Exception:
         traceback.print_exc()
-        messagebox.showerror("Unexpected error", str(e))
+        return []
