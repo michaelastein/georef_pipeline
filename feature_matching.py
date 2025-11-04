@@ -104,18 +104,23 @@ def build_correspondences_from_pixels(idx, x, y, image_data_list, H_dict, adj, s
     """
     Given a pixel location in one image, compute its corresponding pixel locations
     in all connected images using the homography graph.
+    Normalization is applied only once at the end of the homography chain.
     """
     pt = np.array([[x], [y], [1.0]])  # Homogeneous coordinate
     correspondences = [(idx, x, y)]
     comp = node_connected_component(idx, adj)  # Get all connected images
+
     for other in comp:
         if other == idx:
             continue
+
         path = shortest_path(idx, other, adj)
         if path is None:
             continue
+
         cur_pt = pt.copy()
         ok = True
+
         # Apply homographies along the path
         for k in range(len(path) - 1):
             a, b = path[k], path[k + 1]
@@ -125,22 +130,24 @@ def build_correspondences_from_pixels(idx, x, y, image_data_list, H_dict, adj, s
                 break
             try:
                 cur_pt = H @ cur_pt
-                if abs(cur_pt[2, 0]) < 1e-8:
-                    ok = False
-                    break
-                cur_pt = cur_pt / cur_pt[2, 0]
             except Exception:
                 ok = False
                 break
-        if ok:
+
+        # Normalize once at the end
+        if ok and abs(cur_pt[2, 0]) > 1e-8:
+            cur_pt /= cur_pt[2, 0]
             correspondences.append((other, cur_pt[0, 0], cur_pt[1, 0]))
+
     # Build final data with pixel info
     result = []
     for img_idx, px, py in correspondences:
         entry = image_data_list[img_idx].copy()
         entry.update({"pixel_x": float(px), "pixel_y": float(py)})
         result.append(entry)
+
     return result
+
 
 # ---------------------- Graph helpers ----------------------
 
@@ -236,6 +243,8 @@ def main(algorithm=None, anomalies=None, homographies_path=None):
         image_data_list = extract_metadata_from_csv()
         if not image_data_list:
             return
+        
+        print(f"Number of images loaded: {len(image_data_list)}")
         images, orig_sizes, gps_positions = [], [], []
         for entry in image_data_list:
             img = cv2.imread(entry["image_path"])
