@@ -18,7 +18,6 @@ def main(image_data_list, output_csv_path=None):
     """
 
     if not image_data_list:
-        print("[DEBUG] No images provided.")
         return
 
     root = tk.Tk()
@@ -30,7 +29,6 @@ def main(image_data_list, output_csv_path=None):
         filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
     )
     if not csv_path:
-        print("[DEBUG] No CSV selected. Batch processing canceled.")
         return
 
     try:
@@ -43,7 +41,6 @@ def main(image_data_list, output_csv_path=None):
         )
 
         if not matched_items:
-            print("[DEBUG] No matches found.")
             messagebox.showinfo("Batch Processing", "No matches found in CSV.")
             return
 
@@ -52,16 +49,10 @@ def main(image_data_list, output_csv_path=None):
         for item in matched_items:
             for row in item.get("rows", []):
                 result = avg_gps.main([row])  # returns (data, avg_lat, avg_lon)
-                if result is None:
-                    print(f"[DEBUG] avg_gps returned None for {row.get('image_path')}")
-                    continue
+
 
                 _, lat, lon = result  # unpack correctly
-                if lat is None or lon is None:
-                    print(f"[DEBUG] avg_gps returned invalid coordinates for {row.get('image_path')}")
-                    continue
 
-                print(f"[DEBUG] Appending row: {row.get('image_path')}, lat={lat}, lon={lon}")
                 output_rows.append({
                     "anomaly_type": row.get("anomaly", "unknown"),
                     "avg_lat": lat,
@@ -72,7 +63,6 @@ def main(image_data_list, output_csv_path=None):
                 })
 
         if not output_rows:
-            print("[DEBUG] No valid GPS points to write.")
             messagebox.showinfo("Batch Processing", "No valid GPS points found.")
             return
 
@@ -86,7 +76,6 @@ def main(image_data_list, output_csv_path=None):
             writer.writeheader()
             writer.writerows(output_rows)
 
-        print(f"[DEBUG] Output CSV written: {output_csv_path}")
         messagebox.showinfo("Batch Processing Done", f"Results saved to: {output_csv_path}")
 
         # --- Plot CAD map ---
@@ -94,7 +83,6 @@ def main(image_data_list, output_csv_path=None):
                   for r in output_rows if r["avg_lat"] is not None]
         if points:
             central = points[0]["target_gps"]
-            print(f"[DEBUG] Plotting CAD map at central target GPS: {central}")
             plot_cad.plot_cad_map(
                 target_gps=central,
                 points=points,
