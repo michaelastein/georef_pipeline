@@ -39,21 +39,33 @@ def preprocess_for_features(img):
     return clahe.apply(gray)
 
 
-def print_progress(current, total, stage_name, last_print=[-1], lock=None):
+def print_progress(current, total, stage_name, start_time=None, last_print=[-1], lock=None, bar_length=30, update_every_percent=1):
     """
-    Print progress updates in increments of 5%.
-    Can optionally be thread-safe using a lock.
+    Print progress updates with a progress bar and ETA every `update_every_percent` percent.
     """
     percent = int((current / total) * 100) if total > 0 else 100
-    if lock:
-        with lock:
-            if percent // 5 != last_print[0] or current == total:
-                print(f"[{stage_name}] Progress: {percent}% ({current}/{total})")
-                last_print[0] = percent // 5
-    else:
-        if percent // 5 != last_print[0] or current == total:
-            print(f"[{stage_name}] Progress: {percent}% ({current}/{total})")
-            last_print[0] = percent // 5
+    if percent // update_every_percent != last_print[0] or current == total:
+        bar_filled = int(bar_length * percent / 100)
+        bar = "=" * bar_filled + "-" * (bar_length - bar_filled)
+        eta_str = ""
+        if start_time and percent > 0:
+            elapsed = time.time() - start_time
+            eta = elapsed * (100 - percent) / percent
+            mins, secs = divmod(int(eta), 60)
+            eta_str = f" | ETA: {mins:02d}m {secs:02d}s"
+        msg = f"[{stage_name}] [{bar}] {percent:3d}% ({current}/{total}){eta_str}"
+        if lock:
+            with lock:
+                print(msg, end='\r', flush=True)
+                if current == total:
+                    print()
+        else:
+            print(msg, end='\r', flush=True)
+            if current == total:
+                print()
+        last_print[0] = percent // update_every_percent
+
+
 
 
 def save_homographies(H_dict, image_data_list, filename="homographies.pkl"):
@@ -308,7 +320,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None):
             done_count = 0
             for f in as_completed(futures):
                 done_count += 1
-                print_progress(done_count, len(futures), "Feature extraction", lock=progress_lock)
+                print_progress(done_count,len(futures),"Feature extraction",start_time=start_time,lock=progress_lock)
 
         # ---------------------- GPS Neighbor Prefilter ----------------------
         neighbors = []
@@ -428,7 +440,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None):
                 for fut in as_completed(futures):
                     res = fut.result()
                     done_pairs += 1
-                    print_progress(done_pairs, len(futures), "Homography", lock=progress_lock)
+                    print_progress(done_pairs,len(futures),"Homography",start_time=start_time,lock=progress_lock)
                     if res is None:
                         continue
                     i, j, H, in_src, in_dst = res

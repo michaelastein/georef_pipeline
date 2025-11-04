@@ -17,7 +17,7 @@ def plot_cad_map(target_gps, points=None, corner_gps=None, drone_gps=None,
 
     Parameters:
         target_gps: tuple (lat, lon) of the main target
-        points: list of dicts [{'gps': (lat, lon), 'score': float}, ...] (optional)
+        points: list of dicts [{'target_gps': (lat, lon), 'score': float}, ...] (optional)
         corner_gps: list of tuples [(lat, lon), ...] for image corners (optional)
         drone_gps: tuple (lat, lon) for drone position (optional)
         geojson_file: path to GeoJSON CAD file
@@ -83,9 +83,11 @@ def plot_cad_map(target_gps, points=None, corner_gps=None, drone_gps=None,
 
             score = pt.get('score', 0.5)
             color = mcolors.to_hex(cmap(norm(score)))
-            folium.CircleMarker(
+
+            # --- Use folium.Circle with 0.4m radius (40cm) ---
+            folium.Circle(
                 [lat_pt, lon_pt],
-                radius=5 + score*5,
+                radius=0.4,  # in meters
                 color=None,
                 fill=True,
                 fill_color=color,
