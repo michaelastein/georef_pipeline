@@ -244,30 +244,63 @@ def show_images_with_points(points_data, max_thumb_size=150, master=None):
 
 
 # ----------------- Main pipeline -----------------
-def main(data):
-    # Filter images too far from first drone GPS
-    data = filter_points_by_distance(data, max_distance=40.0, gps_type='drone')
+def main(data, max_drone_distance=40.0, max_target_distance=15.0, show_gui=False, plot_map=False):
+    """
+    Process image data: filter by distance, compute scores, average GPS, and optionally display.
+    
+    Returns:
+        processed_data: list of dicts with fields including 'pixel_x', 'pixel_y', 'score', 'target_gps'
+        avg_lat, avg_lon: weighted average GPS coordinates of cluster
+    """
+    if not data:
+        print("No data provided.")
+        return [], None, None
 
-    # Initialize DroneMapper and fill target_gps
+    # --- Filter images too far from first drone GPS ---
+    data = [item for item in data if item.get('gps') is not None]
+    data = filter_points_by_distance(data, max_distance=max_drone_distance, gps_type='drone')
+
+    if not data:
+        print("No data left after drone GPS filtering.")
+        return [], None, None
+
+    # --- Initialize DroneMapper and fill target_gps ---
     mapper = georef_new.DroneMapper()
     data = mapper.get_target_gps_array(data)
 
-    # Filter points too far from first target GPS
-    data = filter_points_by_distance(data, max_distance=15.0, gps_type='target')
+    # --- Filter points too far from first target GPS ---
+    data = [item for item in data if item.get('target_gps') is not None]
+    data = filter_points_by_distance(data, max_distance=max_target_distance, gps_type='target')
 
-    # Compute image scores
+    if not data:
+        print("No data left after target GPS filtering.")
+        return [], None, None
+
+    # --- Compute pixel coordinates for scoring if missing ---
+    for item in data:
+        width, height = item.get('image_size', (1, 1))
+        if 'pixel_x' not in item or item['pixel_x'] is None:
+            item['pixel_x'] = width / 2
+        if 'pixel_y' not in item or item['pixel_y'] is None:
+            item['pixel_y'] = height / 2
+
+    # --- Compute image scores ---
     compute_image_scores(data)
 
-    # Compute weighted average GPS as target
+    # --- Compute weighted average GPS ---
     avg_lat, avg_lon = weighted_average_gps(data)
-    if avg_lat is not None and avg_lon is not None:
-        print(f"Target GPS: {avg_lat:.6f}, {avg_lon:.6f}")
-    else:
-        print("No valid GPS points in cluster near first image.")
-        return
+    if avg_lat is None or avg_lon is None:
+        print("No valid GPS points to compute cluster average.")
+        return data, None, None
 
-    # Visualize on CAD map directly using data
-    #plot_cad_map(target_gps=(avg_lat, avg_lon), points=data)
+    print(f"Target GPS: {avg_lat:.6f}, {avg_lon:.6f}")
 
-    # Show thumbnails of images with points
-    #show_images_with_points(data)
+    # --- Optional CAD map plotting ---
+    if plot_map:
+        plot_cad_map(target_gps=(avg_lat, avg_lon), points=data)
+
+    # --- Optional GUI thumbnail display ---
+    if show_gui:
+        show_images_with_points(data)
+
+    return data, avg_lat, avg_lon
