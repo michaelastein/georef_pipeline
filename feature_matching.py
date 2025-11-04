@@ -100,14 +100,16 @@ def extract_metadata_from_csv():
 
 # ---------------------- Correspondences ----------------------
 
-def build_correspondences_from_pixels(idx, x, y, image_data_list, H_dict, adj, shortest_path, node_connected_component):
+def build_correspondences_from_pixels(idx, x, y, image_data_list, H_dict, adj, shortest_path, node_connected_component, pixel_tol=1e-3):
     """
     Given a pixel location in one image, compute its corresponding pixel locations
     in all connected images using the homography graph.
-    Normalization is applied only once at the end of the homography chain.
+    Duplicate correspondences are removed by rounding pixels to avoid near-duplicate entries.
     """
     pt = np.array([[x], [y], [1.0]])  # Homogeneous coordinate
-    correspondences = [(idx, x, y)]
+    correspondences_set = set()
+    correspondences_set.add((idx, round(float(x)/pixel_tol)*pixel_tol, round(float(y)/pixel_tol)*pixel_tol))
+
     comp = node_connected_component(idx, adj)  # Get all connected images
 
     for other in comp:
@@ -134,19 +136,23 @@ def build_correspondences_from_pixels(idx, x, y, image_data_list, H_dict, adj, s
                 ok = False
                 break
 
-        # Normalize once at the end
+        # Normalize once at the end and add to set (rounded)
         if ok and abs(cur_pt[2, 0]) > 1e-8:
             cur_pt /= cur_pt[2, 0]
-            correspondences.append((other, cur_pt[0, 0], cur_pt[1, 0]))
+            px_rounded = round(float(cur_pt[0, 0])/pixel_tol)*pixel_tol
+            py_rounded = round(float(cur_pt[1, 0])/pixel_tol)*pixel_tol
+            correspondences_set.add((other, px_rounded, py_rounded))
 
     # Build final data with pixel info
     result = []
-    for img_idx, px, py in correspondences:
+    for img_idx, px, py in correspondences_set:
         entry = image_data_list[img_idx].copy()
-        entry.update({"pixel_x": float(px), "pixel_y": float(py)})
+        entry.update({"pixel_x": px, "pixel_y": py})
         result.append(entry)
 
     return result
+
+
 
 
 # ---------------------- Graph helpers ----------------------
