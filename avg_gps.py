@@ -38,7 +38,7 @@ def compute_image_scores(data_array):
 # ----------------- Flexible GPS-based filtering -----------------
 def filter_points_by_distance(data_array, max_distance=50.0, gps_type='drone'):
     """
-    Filter points based on distance from the first point.
+    Filter points based on distance from the first valid point.
 
     Parameters:
         data_array: list of dicts with GPS info
@@ -46,19 +46,22 @@ def filter_points_by_distance(data_array, max_distance=50.0, gps_type='drone'):
         gps_type: 'drone' (uses gps) or 'target' (uses target_gps)
     
     Returns:
-        filtered list of points
+        filtered list of points (always at least the first valid point)
     """
     if not data_array:
         return []
 
     # Determine reference GPS
     ref_point = None
+    ref_item = None
     for item in data_array:
         if gps_type == 'drone' and item.get('gps') is not None:
             ref_point = item['gps'][:2]  # lat, lon
+            ref_item = item
             break
         elif gps_type == 'target' and item.get('target_gps') is not None:
             ref_point = item['target_gps']
+            ref_item = item
             break
 
     if ref_point is None:
@@ -83,34 +86,46 @@ def filter_points_by_distance(data_array, max_distance=50.0, gps_type='drone'):
         if distance <= max_distance:
             filtered.append(item)
 
+    # If all points got discarded, keep the reference point
+    if not filtered:
+        filtered.append(ref_item)
+
     return filtered
+
 
 # ----------------- Weighted average GPS -----------------
 def weighted_average_gps(data_array, z_thresh=2.0, max_distance_m=10.0):
     """
     Compute weighted average GPS while ignoring outliers.
-    Removes points farther than max_distance_m meters from the first target GPS.
-    Outliers above z_thresh are also removed from the data_array itself.
+    - Removes points farther than max_distance_m from the first valid target GPS.
+    - Removes outliers beyond z_thresh standard deviations.
+    - Returns robust fallback even if filtering is too strict.
     """
     if not data_array:
+        print("⚠️ weighted_average_gps: empty data array.")
         return None, None
 
-    # Collect valid target points and scores, and keep track of original indices
+    # Collect valid target_gps and scores
     lats, lons, weights, indices = [], [], [], []
     for idx, item in enumerate(data_array):
         target = item.get('target_gps')
         score = item.get('score', 0.0)
-        if target is None or score <= 0:
+        if not target or score <= 0:
             continue
-        lat, lon = target[:2]  # just in case target_gps is a tuple with more than 2 values
-        if lat is None or lon is None:
+
+        try:
+            lat, lon = float(target[0]), float(target[1])
+        except Exception as e:
+            print(f"⚠️ Skipping invalid GPS {target}: {e}")
             continue
+
         lats.append(lat)
         lons.append(lon)
         weights.append(score)
         indices.append(idx)
 
     if not lats:
+        print("⚠️ No valid GPS coordinates found for averaging.")
         return None, None
 
     lats = np.array(lats)
@@ -118,43 +133,47 @@ def weighted_average_gps(data_array, z_thresh=2.0, max_distance_m=10.0):
     weights = np.array(weights)
     indices = np.array(indices)
 
-    # --- Remove points too far from first target GPS ---
+    # --- Step 1: Filter by max_distance from reference point ---
     ref_lat, ref_lon = lats[0], lons[0]
     distances = np.array([haversine(ref_lat, ref_lon, la, lo) for la, lo in zip(lats, lons)])
     mask_distance = distances <= max_distance_m
-    if not np.any(mask_distance):
-        return None, None  # if all points are too far, return None
 
-    # Keep only points within max distance
+    if not np.any(mask_distance):
+        print(f"⚠️ All points farther than {max_distance_m} m from reference — skipping distance filter.")
+        mask_distance = np.ones_like(distances, dtype=bool)
+
     lats = lats[mask_distance]
     lons = lons[mask_distance]
     weights = weights[mask_distance]
     indices = indices[mask_distance]
 
-    # --- Compute initial weighted averages ---
+    # --- Step 2: Compute weighted average and standard deviation ---
     lat_avg = np.average(lats, weights=weights)
     lon_avg = np.average(lons, weights=weights)
 
-    # --- Weighted standard deviations ---
-    lat_std = np.sqrt(np.average((lats - lat_avg)**2, weights=weights))
-    lon_std = np.sqrt(np.average((lons - lon_avg)**2, weights=weights))
+    lat_std = np.sqrt(np.average((lats - lat_avg) ** 2, weights=weights))
+    lon_std = np.sqrt(np.average((lons - lon_avg) ** 2, weights=weights))
 
-    # --- Remove statistical outliers ---
-    mask = ((np.abs(lats - lat_avg) <= z_thresh * lat_std) &
-            (np.abs(lons - lon_avg) <= z_thresh * lon_std))
-    if not np.any(mask):
-        # fallback if all filtered out
+    # --- Step 3: Remove statistical outliers ---
+    mask_stats = (
+        (np.abs(lats - lat_avg) <= z_thresh * lat_std) &
+        (np.abs(lons - lon_avg) <= z_thresh * lon_std)
+    )
+
+    if not np.any(mask_stats):
+        print("⚠️ All points filtered out by z-score — using initial weighted average.")
         return lat_avg, lon_avg
 
-    # --- Remove outliers from original data array ---
-    to_keep_indices = indices[mask]
-    data_array[:] = [data_array[i] for i in to_keep_indices]
+    to_keep = indices[mask_stats]
+    data_array[:] = [data_array[i] for i in to_keep]
 
-    # Final weighted average
-    lat_avg = np.average(lats[mask], weights=weights[mask])
-    lon_avg = np.average(lons[mask], weights=weights[mask])
+    # --- Step 4: Recompute final average ---
+    lat_avg = np.average(lats[mask_stats], weights=weights[mask_stats])
+    lon_avg = np.average(lons[mask_stats], weights=weights[mask_stats])
 
+    print(f"✅ Weighted average GPS: lat={lat_avg:.7f}, lon={lon_avg:.7f} (kept {len(to_keep)}/{len(distances)})")
     return lat_avg, lon_avg
+
 
 
 
@@ -165,14 +184,14 @@ def show_images_with_points(points_data, max_thumb_size=150, master=None):
     Display images with marked points in a Tkinter window.
     
     points_data: list of dicts, each must have:
-        - 'image_path' (str)
+        - 'image_name' (str)
         - 'pixel_x', 'pixel_y' (float, optional)
         - 'image_size' (tuple, optional)
         - 'score' (float)
     max_thumb_size: max width/height for thumbnails
     master: existing Tk root or Toplevel parent
     """
-    valid_points = [p for p in points_data if p.get('score', 0) > 0 and p.get('image_path')]
+    valid_points = [p for p in points_data if p.get('score', 0) > 0 and p.get('image_name')]
     if not valid_points:
         print("No images with valid points to show.")
         return
@@ -201,7 +220,7 @@ def show_images_with_points(points_data, max_thumb_size=150, master=None):
     cols = 5
 
     for i, item in enumerate(valid_points):
-        img_path = item['image_path']
+        img_path = item['image_name']
         if not os.path.exists(img_path):
             continue
         img = cv2.imread(img_path)
@@ -244,45 +263,45 @@ def show_images_with_points(points_data, max_thumb_size=150, master=None):
 
 
 # ----------------- Main pipeline -----------------
-def main(data, max_drone_distance=40.0, max_target_distance=15.0, show_gui=False, plot_map=False):
+def main(data, max_drone_distance=40.0, max_target_distance=20.0, show_gui=False, plot_map=False):
     """
     Process image data: filter by distance, compute scores, average GPS, and optionally display.
-    
+
     Returns:
         processed_data: list of dicts with fields including 'pixel_x', 'pixel_y', 'score', 'target_gps'
         avg_lat, avg_lon: weighted average GPS coordinates of cluster
     """
+    import pprint
+    pp = pprint.PrettyPrinter(indent=4)
+
     if not data:
         print("No data provided.")
         return [], None, None
 
-    # --- Filter images too far from first drone GPS ---
+    # --- Filter images with valid drone GPS ---
     data = [item for item in data if item.get('gps') is not None]
-    data = filter_points_by_distance(data, max_distance=max_drone_distance, gps_type='drone')
-
     if not data:
-        print("No data left after drone GPS filtering.")
+        print("No items with valid drone GPS.")
         return [], None, None
+
+    # --- Filter by distance from first drone GPS ---
+    data = filter_points_by_distance(data, max_distance=max_drone_distance, gps_type='drone')
 
     # --- Initialize DroneMapper and fill target_gps ---
     mapper = georef_new.DroneMapper()
     data = mapper.get_target_gps_array(data)
 
-    # --- Filter points too far from first target GPS ---
+    # --- Filter items with valid target GPS ---
     data = [item for item in data if item.get('target_gps') is not None]
-    data = filter_points_by_distance(data, max_distance=max_target_distance, gps_type='target')
-
     if not data:
-        print("No data left after target GPS filtering.")
+        print("No items with valid target GPS.")
         return [], None, None
 
-    # --- Compute pixel coordinates for scoring if missing ---
-    for item in data:
-        width, height = item.get('image_size', (1, 1))
-        if 'pixel_x' not in item or item['pixel_x'] is None:
-            item['pixel_x'] = width / 2
-        if 'pixel_y' not in item or item['pixel_y'] is None:
-            item['pixel_y'] = height / 2
+    # --- Filter by distance from first target GPS ---
+    data = filter_points_by_distance(data, max_distance=max_target_distance, gps_type='target')
+
+
+
 
     # --- Compute image scores ---
     compute_image_scores(data)

@@ -87,7 +87,7 @@ class CanvasGUI:
                 if idx in self.pil_cache:
                     self.load_queue.task_done()
                     continue
-            path = self.image_data_list[idx]["image_path"]
+            path = self.image_data_list[idx]["image_name"]
             try:
                 bgr = cv2.imread(path)
                 if bgr is None:
@@ -150,7 +150,7 @@ class CanvasGUI:
         x, y, scale, disp_w, disp_h = self.img_positions[idx]
         img_id = self.canvas.create_image(x, y, image=photo, anchor=NW)
         self.drawn_image_items[idx] = img_id
-        name = self.image_data_list[idx]["image_path"].split("/")[-1].rsplit(".", 1)[0]
+        name = self.image_data_list[idx]["image_name"].split("/")[-1].rsplit(".", 1)[0]
         if idx in self.drawn_text_items:
             self.canvas.delete(self.drawn_text_items[idx])
         tid = self.canvas.create_text(x + disp_w / 2, y + disp_h + 12, text=name, fill="white")

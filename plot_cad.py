@@ -72,7 +72,7 @@ def plot_cad_map(target_gps, points=None, corner_gps=None, drone_gps=None,
 
     # --- Plot GPS points with color based on score ---
     if points:
-        scores = [pt.get('score', 0.5) for pt in points]
+        scores = [pt.get('score', 1) for pt in points]
         norm = mcolors.Normalize(vmin=min(scores), vmax=max(scores))
         cmap = cm.get_cmap('YlOrRd')
 

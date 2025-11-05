@@ -68,9 +68,7 @@ def extract_metadata_from_csv(img_paths):
             angles = (None, None, None)
         data_entries.append({
             "image_index": idx,
-            "image_path": path,
-            "pixel_x": width / 2,  # default center
-            "pixel_y": height / 2,
+            "image_name": path,
             "gps": gps_tuple,
             "yaw": angles[0],
             "pitch": angles[1],
@@ -113,6 +111,8 @@ def select_pixel_gui(img_array):
     width, height = img_array.shape[1], img_array.shape[0]
     u = clicked_point.get('u', width // 2)
     v = clicked_point.get('v', height // 2)
+    print(u)
+    print("selected pixel")
     return u, v
 
 
@@ -208,7 +208,7 @@ class DroneMapper:
         data_array = extract_metadata_from_csv(img_paths)
 
         for entry in data_array:
-            img = Image.open(entry['image_path'])
+            img = Image.open(entry['image_name'])
             img_array = np.array(img)
             if img_array.dtype == np.uint16:
                 img_array = (img_array / 256).astype(np.uint8)
@@ -237,7 +237,7 @@ class DroneMapper:
                     drone_gps=(e['gps'][0] + self.DRONE_OFFSET_NORTH,
                                e['gps'][1] + self.DRONE_OFFSET_EAST)
                 ))
-            show_image_with_buttons(img_array, u, v, filename=entry['image_path'])
+            show_image_with_buttons(img_array, u, v, filename=entry['image_name'])
 
 
 # ---------------- CLI ----------------

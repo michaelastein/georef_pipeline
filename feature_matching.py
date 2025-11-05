@@ -15,6 +15,8 @@ from tkinter.filedialog import askopenfilename, askopenfilenames
 from collections import deque
 import pickle
 import georef_new
+
+import json
 # ---------------------- Utility Functions ----------------------
 
 def haversine(lat1, lon1, lat2, lon2):
@@ -88,6 +90,9 @@ def load_homographies(filename="homographies.pkl"):
     with open(filename, "rb") as f:
         data = pickle.load(f)
     print(f"Loaded homographies and image data from {filename}")
+
+
+
     return data["H_dict"], data["image_data_list"]
 
 
@@ -110,59 +115,7 @@ def extract_metadata_from_csv():
     # Delegate all metadata extraction to georef_new
     return georef_new.extract_metadata_from_csv(img_paths)
 
-# ---------------------- Correspondences ----------------------
 
-def build_correspondences_from_pixels(idx, x, y, image_data_list, H_dict, adj, shortest_path, node_connected_component, pixel_tol=1e-3):
-    """
-    Given a pixel location in one image, compute its corresponding pixel locations
-    in all connected images using the homography graph.
-    Duplicate correspondences are removed by rounding pixels to avoid near-duplicate entries.
-    """
-    pt = np.array([[x], [y], [1.0]])  # Homogeneous coordinate
-    correspondences_set = set()
-    correspondences_set.add((idx, round(float(x)/pixel_tol)*pixel_tol, round(float(y)/pixel_tol)*pixel_tol))
-
-    comp = node_connected_component(idx, adj)  # Get all connected images
-
-    for other in comp:
-        if other == idx:
-            continue
-
-        path = shortest_path(idx, other, adj)
-        if path is None:
-            continue
-
-        cur_pt = pt.copy()
-        ok = True
-
-        # Apply homographies along the path
-        for k in range(len(path) - 1):
-            a, b = path[k], path[k + 1]
-            H = H_dict.get((a, b))
-            if H is None:
-                ok = False
-                break
-            try:
-                cur_pt = H @ cur_pt
-            except Exception:
-                ok = False
-                break
-
-        # Normalize once at the end and add to set (rounded)
-        if ok and abs(cur_pt[2, 0]) > 1e-8:
-            cur_pt /= cur_pt[2, 0]
-            px_rounded = round(float(cur_pt[0, 0])/pixel_tol)*pixel_tol
-            py_rounded = round(float(cur_pt[1, 0])/pixel_tol)*pixel_tol
-            correspondences_set.add((other, px_rounded, py_rounded))
-
-    # Build final data with pixel info
-    result = []
-    for img_idx, px, py in correspondences_set:
-        entry = image_data_list[img_idx].copy()
-        entry.update({"pixel_x": px, "pixel_y": py})
-        result.append(entry)
-
-    return result
 
 
 
@@ -245,16 +198,18 @@ def main(algorithm=None, anomalies=None, homographies_path=None):
     # ---------------------- Load or compute homographies ----------------------
     if homographies_path:
         H_dict, image_data_list = load_homographies(homographies_path)
-        images = [cv2.imread(entry["image_path"]) for entry in image_data_list]
+        images = [cv2.imread(entry["image_name"]) for entry in image_data_list]
         orig_sizes = [entry["image_size"] for entry in image_data_list]
         gps_positions = [entry["gps"] for entry in image_data_list]
         print("Using loaded homographies and image data. Skipping image selection.")
 
         # Print first and last image names
-        first_image_name = image_data_list[0]["image_path"]
-        last_image_name = image_data_list[-1]["image_path"]
+        first_image_name = image_data_list[0]["image_name"]
+        last_image_name = image_data_list[-1]["image_name"]
         print(f"First image: {first_image_name}")
         print(f"Last image: {last_image_name}")
+
+  
 
 
     else:
@@ -265,9 +220,9 @@ def main(algorithm=None, anomalies=None, homographies_path=None):
         print(f"Number of images loaded: {len(image_data_list)}")
         images, orig_sizes, gps_positions = [], [], []
         for entry in image_data_list:
-            img = cv2.imread(entry["image_path"])
+            img = cv2.imread(entry["image_name"])
             if img is None:
-                print(f"Warning: could not read {entry['image_path']}")
+                print(f"Warning: could not read {entry['image_name']}")
                 continue
             images.append(img)
             orig_sizes.append((img.shape[1], img.shape[0]))
@@ -279,7 +234,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None):
         # ---------------------- Feature Detector Setup ----------------------
         if algorithm is None:
             # Default: BRISK for TIFF images, otherwise SIFT
-            algorithm = "BRISK" if image_data_list[0]["image_path"].lower().endswith((".tif", ".tiff")) else "SIFT"
+            algorithm = "BRISK" if image_data_list[0]["image_name"].lower().endswith((".tif", ".tiff")) else "SIFT"
 
         if algorithm == "SIFT":
             detector = cv2.SIFT_create(); descriptor_type = "float"
@@ -467,7 +422,87 @@ def main(algorithm=None, anomalies=None, homographies_path=None):
         adj.setdefault(a, set()).add(b)
         adj.setdefault(b, set()).add(a)
 
-    
+    # ---------------------- Correspondences ----------------------
+
+    def build_correspondences_from_pixels(idx, x, y, image_data_list, pixel_tol=1e-3):
+        """
+        Given a pixel location in one image (idx), compute its corresponding pixel locations
+        in all connected images using the homography graph.
+        Duplicate correspondences are removed by rounding pixels to avoid near-duplicate entries.
+        The source image is always the first element in the returned list.
+        Correspondences that fall outside image bounds are skipped.
+        Final pixel coordinates are rounded to integers.
+        """
+        pt = np.array([[x], [y], [1.0]])  # Homogeneous coordinate
+        correspondences_set = set()
+
+        # Add source pixel (rounded to int)
+        px_rounded = int(round(x))
+        py_rounded = int(round(y))
+        correspondences_set.add((idx, px_rounded, py_rounded))
+
+        comp = node_connected_component(idx, adj)  # Get all connected images
+
+        for other in comp:
+            if other == idx:
+                continue
+
+            path = shortest_path(idx, other, adj)
+            if path is None:
+                continue
+
+            cur_pt = pt.copy()
+            ok = True
+
+            # Apply homographies along the path
+            for k in range(len(path) - 1):
+                a, b = path[k], path[k + 1]
+                H = H_dict.get((a, b))
+                if H is None:
+                    ok = False
+                    break
+                try:
+                    cur_pt = H @ cur_pt
+                    if abs(cur_pt[2, 0]) < 1e-8:
+                        ok = False
+                        break
+                    cur_pt /= cur_pt[2, 0]  # normalize after each step
+                except Exception:
+                    ok = False
+                    break
+
+            # Only add if within image bounds
+            if ok:
+                w, h = image_data_list[other]["image_size"]
+                px, py = cur_pt[0, 0], cur_pt[1, 0]
+                if 0 <= px < w and 0 <= py < h:
+                    px_int = int(round(px))
+                    py_int = int(round(py))
+                    correspondences_set.add((other, px_int, py_int))
+
+        # Build final data with pixel info, ensuring source image is first
+        result = []
+
+        # Add source image first
+        entry = image_data_list[idx].copy()
+        entry.update({"pixel_x": int(round(x)),
+                    "pixel_y": int(round(y))})
+        result.append(entry)
+
+        # Add other correspondences
+        for img_idx, px, py in correspondences_set:
+            if img_idx == idx:
+                continue
+            entry = image_data_list[img_idx].copy()
+            entry.update({"pixel_x": px, "pixel_y": py})
+            result.append(entry)
+
+        return result
+
+
+
+
+            
 
 
 
@@ -478,34 +513,26 @@ def main(algorithm=None, anomalies=None, homographies_path=None):
         idx, x, y, csv_path = launch_anomaly_gui(
             image_data_list
         )
-        data = build_correspondences_from_pixels(
+        correspondence_data = build_correspondences_from_pixels(
             idx, x, y,
-            image_data_list=image_data_list,
-            H_dict=H_dict,
-            adj=adj,
-            node_connected_component=node_connected_component,
-            shortest_path=shortest_path
+            image_data_list=image_data_list
         )
-        avg_gps.main(data)
+        avg_gps.main(correspondence_data)
         if csv_path:
             import matching_anomalies
 
-            matching_anomalies.main(data, csv_path)
+            matching_anomalies.main(correspondence_data, csv_path)
 
     elif anomalies == "batch":
         # Launch batch anomaly processing
-        anomalies_batch.main(image_data_list)
+        anomalies_batch.main(image_data_list, build_corr_func=build_correspondences_from_pixels)
 
     else:
         def click_callback(idx, x, y, gui):
             
             data = build_correspondences_from_pixels(
                 idx, x, y,
-                image_data_list=image_data_list,
-                H_dict=H_dict,
-                adj=adj,
-                node_connected_component=node_connected_component,
-                shortest_path=shortest_path
+                image_data_list=image_data_list
             )
 
             avg_gps.main(data)

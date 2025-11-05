@@ -54,7 +54,7 @@ def launch_anomaly_gui(image_data_list):
         nonlocal selected_img_entry, idx, img, display_img, tk_img
         path = askopenfilename(
             title="Select one image from the batch",
-            initialdir=image_data_list[0]["image_path"] if image_data_list else ".",
+            initialdir=image_data_list[0]["image_name"] if image_data_list else ".",
             filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff")]
         )
         if not path:
@@ -63,7 +63,7 @@ def launch_anomaly_gui(image_data_list):
 
         # Find the index of the selected image in image_data_list
         for i, entry in enumerate(image_data_list):
-            if entry["image_path"] == path:
+            if entry["image_name"] == path:
                 selected_img_entry = entry
                 idx = i
                 break
@@ -72,12 +72,12 @@ def launch_anomaly_gui(image_data_list):
             return
 
         # Load and display image
-        img = Image.open(selected_img_entry["image_path"]).convert("RGB")
+        img = Image.open(selected_img_entry["image_name"]).convert("RGB")
         display_img = img.copy()
         tk_img = ImageTk.PhotoImage(display_img)
         lbl_img.config(image=tk_img)
         lbl_img.image = tk_img
-        win.title(f"Select Pixel and CSV for {selected_img_entry['image_path'].split('/')[-1]}")
+        win.title(f"Select Pixel and CSV for {selected_img_entry['image_name'].split('/')[-1]}")
 
     # ------------------- Draw marker on image -------------------
     def draw_marker(px, py):
