@@ -521,7 +521,15 @@ def main(algorithm=None, anomalies=None, homographies_path=None):
         if csv_path:
             import matching_anomalies
 
-            matching_anomalies.main(correspondence_data, csv_path)
+            results = matching_anomalies.main(correspondence_data, csv_path)
+
+            # --- Print all image_name values ---
+            if results:
+                print("Matched image files:")
+                for r in results:
+                    print(os.path.basename(r["image_name"]))
+            else:
+                print("No matching anomalies found.")
 
     elif anomalies == "batch":
         # Launch batch anomaly processing

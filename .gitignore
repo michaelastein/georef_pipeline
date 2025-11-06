@@ -6,4 +6,5 @@ __pycache__/
 *.html
 *.geojson
 *.tif
-homographies.pkl
+*.pkl
+
