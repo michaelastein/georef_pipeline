@@ -102,7 +102,6 @@ def weighted_average_gps(data_array, z_thresh=2.0, max_distance_m=10.0):
     - Returns robust fallback even if filtering is too strict.
     """
     if not data_array:
-        print("⚠️ weighted_average_gps: empty data array.")
         return None, None
 
     # Collect valid target_gps and scores
@@ -116,7 +115,6 @@ def weighted_average_gps(data_array, z_thresh=2.0, max_distance_m=10.0):
         try:
             lat, lon = float(target[0]), float(target[1])
         except Exception as e:
-            print(f"⚠️ Skipping invalid GPS {target}: {e}")
             continue
 
         lats.append(lat)
@@ -125,7 +123,6 @@ def weighted_average_gps(data_array, z_thresh=2.0, max_distance_m=10.0):
         indices.append(idx)
 
     if not lats:
-        print("⚠️ No valid GPS coordinates found for averaging.")
         return None, None
 
     lats = np.array(lats)
@@ -139,7 +136,6 @@ def weighted_average_gps(data_array, z_thresh=2.0, max_distance_m=10.0):
     mask_distance = distances <= max_distance_m
 
     if not np.any(mask_distance):
-        print(f"⚠️ All points farther than {max_distance_m} m from reference — skipping distance filter.")
         mask_distance = np.ones_like(distances, dtype=bool)
 
     lats = lats[mask_distance]
@@ -161,7 +157,6 @@ def weighted_average_gps(data_array, z_thresh=2.0, max_distance_m=10.0):
     )
 
     if not np.any(mask_stats):
-        print("⚠️ All points filtered out by z-score — using initial weighted average.")
         return lat_avg, lon_avg
 
     to_keep = indices[mask_stats]
@@ -171,7 +166,6 @@ def weighted_average_gps(data_array, z_thresh=2.0, max_distance_m=10.0):
     lat_avg = np.average(lats[mask_stats], weights=weights[mask_stats])
     lon_avg = np.average(lons[mask_stats], weights=weights[mask_stats])
 
-    print(f"✅ Weighted average GPS: lat={lat_avg:.7f}, lon={lon_avg:.7f} (kept {len(to_keep)}/{len(distances)})")
     return lat_avg, lon_avg
 
 
