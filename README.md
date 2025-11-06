@@ -5,7 +5,7 @@ A pipeline to
 - display the gps position on a CAD map or on Google maps
 
 Start the programm from the terminal with 
- `python feature_matching.py` or `python feature_matching.py --anomalies`
+`python feature_matching.py --anomalies batch`
 
 
 For only georeferencing:
