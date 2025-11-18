@@ -257,7 +257,7 @@ def show_images_with_points(points_data, max_thumb_size=150, master=None):
 
 
 # ----------------- Main pipeline -----------------
-def main(data, max_drone_distance=40.0, max_target_distance=20.0, show_gui=False, plot_map=False):
+def main(data, max_drone_distance=40.0, max_target_distance=20.0, show_gui=False, plot_map=False, dem_path = None):
     """
     Process image data: filter by distance, compute scores, average GPS, and optionally display.
 
@@ -283,7 +283,7 @@ def main(data, max_drone_distance=40.0, max_target_distance=20.0, show_gui=False
 
     # --- Initialize DroneMapper and fill target_gps ---
     mapper = georef_new.DroneMapper()
-    data = mapper.get_target_gps_array(data)
+    data = mapper.get_target_gps_array(data, dem_path= dem_path)
 
     # --- Filter items with valid target GPS ---
     data = [item for item in data if item.get('target_gps') is not None]

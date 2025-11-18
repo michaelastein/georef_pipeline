@@ -171,7 +171,7 @@ def shortest_path(u, v, adj):
 
 # ---------------------- Main Function ----------------------
 
-def main(algorithm=None, anomalies=None, homographies_path=None):
+def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None):
     """
     Main pipeline:
     1. Load images and metadata (or load precomputed homographies)
@@ -517,7 +517,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None):
             idx, x, y,
             image_data_list=image_data_list
         )
-        avg_gps.main(correspondence_data)
+        avg_gps.main(correspondence_data, dem_path= dem_path)
         if csv_path:
             import matching_anomalies
 
@@ -533,7 +533,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None):
 
     elif anomalies == "batch":
         # Launch batch anomaly processing
-        anomalies_batch.main(image_data_list, build_corr_func=build_correspondences_from_pixels)
+        anomalies_batch.main(image_data_list, build_corr_func=build_correspondences_from_pixels, dem_path= dem_path)
 
     else:
         def click_callback(idx, x, y, gui):
@@ -543,7 +543,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None):
                 image_data_list=image_data_list
             )
 
-            avg_gps.main(data)
+            avg_gps.main(data, dem_path= dem_path)
             return data  # returned data will be drawn as yellow markers
 
         gui = gui_canvas.CanvasGUI(image_data_list, orig_sizes, click_callback=click_callback)
@@ -568,17 +568,24 @@ if __name__ == "__main__":
         default="none",
         help="Anomalies mode: 'none' (default), 'single', or 'batch'"
     )
-
     parser.add_argument(
-        "-l", "--load-homographies",
+        "-h", "--homographies",
         type=str,
         default=None,
         help="Load homographies and image data from a file instead of computing them"
+    )
+    parser.add_argument(
+        "-d", "--dem",
+        type=str,
+        default=None,
+        help="Load a Digital Elevation Model (DEM) from a file"
     )
 
     args = parser.parse_args()
     algorithm = args.algorithm.upper() if args.algorithm else None
     anomalies_mode = args.anomalies
-    homographies_path = args.load_homographies
+    homographies_path = args.homographies
+    dem_path = args.dem
 
-    main(algorithm, anomalies=anomalies_mode, homographies_path=homographies_path)
+    main(algorithm, anomalies=anomalies_mode, homographies_path=homographies_path, dem_path=dem_path)
+
