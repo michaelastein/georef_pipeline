@@ -13,16 +13,33 @@ from pyproj import Transformer
 from pathlib import Path
 from plot_maps import plot_google_maps  # Function to plot points on Google Maps
 from plot_cad import plot_cad_map        # Optional CAD plotting function
+import laspy
+
 
 # ---------------- User Parameters ----------------
 DRONE_OFFSET_NORTH = 0.0
 DRONE_OFFSET_EAST  = 0.0
-DRONE_OFFSET_UP    = 0.0
+DRONE_OFFSET_UP    = -10
 PANEL_HEIGHT_CORRECTION = 0.0  # Corrects for panel height if needed
 
 # ---------------- Utility Functions ----------------
 
-def extract_metadata_from_csv(img_paths):
+
+def extract_metadata_from_csv(img_paths, image_columns=None):
+    """
+    Extract metadata from a CSV file for given images.
+    
+    Args:
+        img_paths (list of str): List of image file paths.
+        image_columns (list of str, optional): Possible column names for image filenames.
+            Defaults to ["wiris_image", "pi_image", "image_name"].
+    
+    Returns:
+        list of dict: Metadata entries for each image.
+    """
+    if image_columns is None:
+        image_columns = ["wiris_image", "pi_image", "image_name"]
+        
     folder = Path(img_paths[0]).parent
     csv_files = list(folder.glob("*.csv"))
 
@@ -40,7 +57,12 @@ def extract_metadata_from_csv(img_paths):
     with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            img_file = row.get("wiris_image", "").strip()
+            img_file = None
+            # Try multiple possible columns for image filename
+            for col in image_columns:
+                if col in row and row[col].strip():
+                    img_file = row[col].strip()
+                    break
             if not img_file:
                 continue
             try:
@@ -78,6 +100,7 @@ def extract_metadata_from_csv(img_paths):
             "image_size": (width, height)
         })
     return data_entries
+
 
 
 def enu_to_gps(x, y, origin_lat, origin_lon):
@@ -177,6 +200,51 @@ def get_elevation_from_dem(dem_path: str, lat: float, lon: float) -> float:
         elevation = list(dem.sample([(x, y)]))[0][0]
         
         return float(elevation)
+    
+
+
+def get_elevation_from_laserscan(laz_path: str, lat: float, lon: float, utm_epsg: int = 25830) -> float:
+    """
+    Returns the orthometric height (Z) at a given GPS coordinate (decimal degrees)
+    from a .laz LiDAR tile.
+
+    Args:
+        laz_path (str): Path to the .laz file
+        lat (float): Latitude in decimal degrees (e.g., 40.7080056)
+        lon (float): Longitude in decimal degrees (e.g., -4.437500)
+        utm_epsg (int): EPSG code of the LiDAR CRS (default 25830 = UTM 30N)
+
+    Returns:
+        float: Height in meters (orthometric)
+    """
+
+    # Load LAZ
+    las = laspy.read(laz_path)
+
+    # Extract coordinates
+    x = np.array(las.x)
+    y = np.array(las.y)
+    z = np.array(las.z)
+
+    # Transform GPS → LiDAR UTM coordinates
+    transformer = Transformer.from_crs("EPSG:4326", f"EPSG:{utm_epsg}", always_xy=True)
+    x_target, y_target = transformer.transform(lon, lat)
+
+    # Distance to all points
+    distances = np.sqrt((x - x_target)**2 + (y - y_target)**2)
+
+    if len(distances) == 0:
+        raise ValueError("No points found in LAZ file.")
+
+    # Closest point
+    nearest_index = np.argmin(distances)
+    height = z[nearest_index]
+
+    print(f"Nearest LiDAR point: X={x[nearest_index]:.2f}, Y={y[nearest_index]:.2f}")
+    print(f"Input GPS: lat={lat:.6f}, lon={lon:.6f}")
+    print(f"Height: {height:.2f} m (orthometric)")
+
+    return height
 
 
 
@@ -189,7 +257,7 @@ class DroneMapper:
         self.DRONE_OFFSET_UP = drone_offset_up
         self.PANEL_HEIGHT_CORRECTION = panel_height
 
-    def get_target_gps(self, u, v, gps, angles, image_size, dem_path= None):
+    def get_target_gps(self, u, v, gps, angles, image_size, dem_path= None, lidar_path = None):
         # Skip if GPS or angles are invalid
         if gps is None or None in gps[:2] or any(a is None for a in angles):
             return None, None
@@ -207,6 +275,15 @@ class DroneMapper:
         if dem_path:
             ground_height = get_elevation_from_dem(dem_path=dem_path, lat=drone_lat, lon= drone_lon)
             corrected_altitude= drone_alt - ground_height - self.PANEL_HEIGHT_CORRECTION + self.DRONE_OFFSET_UP
+            print("corrected_altitude " + str(corrected_altitude))
+            print("rel_alt " + str(rel_alt))
+        
+        elif lidar_path: 
+            ground_height = get_elevation_from_laserscan(laz_path= lidar_path, lat=drone_lat, lon= drone_lon)
+            corrected_altitude= drone_alt - ground_height - self.PANEL_HEIGHT_CORRECTION + self.DRONE_OFFSET_UP
+            print("corrected_altitude " + str(corrected_altitude))
+            print("rel_alt " + str(rel_alt))
+
 
         else:
             corrected_altitude = rel_alt - self.PANEL_HEIGHT_CORRECTION + self.DRONE_OFFSET_UP
@@ -227,12 +304,12 @@ class DroneMapper:
         target_lat, target_lon = enu_to_gps(target_3D[0], target_3D[1], drone_lat, drone_lon)
         return target_lat, target_lon
 
-    def get_target_gps_array(self, data_array, dem_path= None):
+    def get_target_gps_array(self, data_array, dem_path= None, lidar_path = None):
         for data in data_array:
             u = data.get('pixel_x', data['image_size'][0] / 2)
             v = data.get('pixel_y', data['image_size'][1] / 2)
             yaw, pitch, roll = data['yaw'], data['pitch'], data['roll']
-            lat_lon = self.get_target_gps(u, v, gps=data['gps'], angles=(yaw, pitch, roll), image_size=data['image_size'], dem_path=dem_path)
+            lat_lon = self.get_target_gps(u, v, gps=data['gps'], angles=(yaw, pitch, roll), image_size=data['image_size'], dem_path=dem_path, lidar_path = lidar_path)
             data['target_gps'] = lat_lon if lat_lon != (None, None) else None
         return data_array
 

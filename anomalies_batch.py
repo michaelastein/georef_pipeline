@@ -87,7 +87,7 @@ def add_anomaly_to_csv(output_array, anomaly_type, latitude, longitude,
     output_array.append(entry)
 
 # ---------------- Process single anomaly ----------------
-def process_next_anomaly(row, image_data_list, build_corr_func, csv_path, dem_path = None):
+def process_next_anomaly(row, image_data_list, build_corr_func, csv_path, dem_path = None, lidar_path = None):
     global csv_anomaly_array
     try:
         # Get pixel coordinates from CSV row
@@ -109,7 +109,7 @@ def process_next_anomaly(row, image_data_list, build_corr_func, csv_path, dem_pa
         )
 
         # Compute weighted average GPS
-        processed_data, avg_lat, avg_lon = avg_gps.main(correspondance_array, dem_path=dem_path)
+        processed_data, avg_lat, avg_lon = avg_gps.main(correspondance_array, dem_path=dem_path, lidar_path = lidar_path)
         if avg_lat is None or avg_lon is None:
             return None
 
@@ -196,7 +196,7 @@ def remove_matched_anomalies(matched_items):
     print(f" Remaining rows: {len(csv_anomaly_array)}")
 
 # ---------------- Main pipeline ----------------
-def main(image_data_list, build_corr_func, dem_path = None):
+def main(image_data_list, build_corr_func, dem_path = None, lidar_path = None):
     global csv_anomaly_array
     try:
         Tk().withdraw()
@@ -211,7 +211,7 @@ def main(image_data_list, build_corr_func, dem_path = None):
 
         while csv_anomaly_array:
             row = csv_anomaly_array.pop(0)
-            process_next_anomaly(row, image_data_list, build_corr_func, csv_path, dem_path=dem_path)
+            process_next_anomaly(row, image_data_list, build_corr_func, csv_path, dem_path=dem_path, lidar_path = lidar_path)
 
         print(" All anomalies processed.")
         write_csv(csv_path, output_array)

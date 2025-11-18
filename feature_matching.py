@@ -171,7 +171,7 @@ def shortest_path(u, v, adj):
 
 # ---------------------- Main Function ----------------------
 
-def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None):
+def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None, lidar_path = None):
     """
     Main pipeline:
     1. Load images and metadata (or load precomputed homographies)
@@ -517,7 +517,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None)
             idx, x, y,
             image_data_list=image_data_list
         )
-        avg_gps.main(correspondence_data, dem_path= dem_path)
+        avg_gps.main(correspondence_data, dem_path= dem_path, lidar_path = lidar_path)
         if csv_path:
             import matching_anomalies
 
@@ -533,7 +533,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None)
 
     elif anomalies == "batch":
         # Launch batch anomaly processing
-        anomalies_batch.main(image_data_list, build_corr_func=build_correspondences_from_pixels, dem_path= dem_path)
+        anomalies_batch.main(image_data_list, build_corr_func=build_correspondences_from_pixels, dem_path= dem_path, lidar_path = lidar_path)
 
     else:
         def click_callback(idx, x, y, gui):
@@ -543,7 +543,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None)
                 image_data_list=image_data_list
             )
 
-            avg_gps.main(data, dem_path= dem_path)
+            avg_gps.main(data, dem_path= dem_path, lidar_path = lidar_path)
             return data  # returned data will be drawn as yellow markers
 
         gui = gui_canvas.CanvasGUI(image_data_list, orig_sizes, click_callback=click_callback)
@@ -556,24 +556,28 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Image feature matcher with optional GUI.")
+
     parser.add_argument(
-        "-a", "--algorithm",
+        "--algorithm",
         choices=["SIFT", "AKAZE", "ORB", "BRISK", "KAZE"],
         default=None,
         help="Feature algorithm"
     )
+
     parser.add_argument(
-        "--anomalies",
+        "-a", "--anomalies",
         choices=["none", "single", "batch"],
         default="none",
         help="Anomalies mode: 'none' (default), 'single', or 'batch'"
     )
+
     parser.add_argument(
-        "-h", "--homographies",
+        "-H", "--homographies",
         type=str,
         default=None,
         help="Load homographies and image data from a file instead of computing them"
     )
+
     parser.add_argument(
         "-d", "--dem",
         type=str,
@@ -581,11 +585,27 @@ if __name__ == "__main__":
         help="Load a Digital Elevation Model (DEM) from a file"
     )
 
+    parser.add_argument(
+        "-l", "--lidar",
+        type=str,
+        default=None,
+        help="Load a LiDAR LAZ file"
+    )
+
     args = parser.parse_args()
+
     algorithm = args.algorithm.upper() if args.algorithm else None
     anomalies_mode = args.anomalies
     homographies_path = args.homographies
     dem_path = args.dem
+    lidar_path = args.lidar
 
-    main(algorithm, anomalies=anomalies_mode, homographies_path=homographies_path, dem_path=dem_path)
+    main(
+        algorithm,
+        anomalies=anomalies_mode,
+        homographies_path=homographies_path,
+        dem_path=dem_path,
+        lidar_path=lidar_path,
+    )
+
 
