@@ -8,6 +8,8 @@ import os
 from PIL import Image, ImageTk
 import pyproj
 import csv
+import rasterio
+from pyproj import Transformer
 from pathlib import Path
 from plot_maps import plot_google_maps  # Function to plot points on Google Maps
 from plot_cad import plot_cad_map        # Optional CAD plotting function
@@ -153,6 +155,31 @@ def show_image_with_buttons(img_array, u, v, filename):
     root.mainloop()
 
 
+
+def get_elevation_from_dem(dem_path: str, lat: float, lon: float) -> float:
+    """
+    Returns the elevation at a given GPS coordinate from a DEM (.tif).
+
+    Args:
+        dem_path (str): Path to the DEM file (.tif)
+        lat (float): Latitude of the point in degrees
+        lon (float): Longitude of the point in degrees
+
+    Returns:
+        float: Elevation in meters at the given GPS point
+    """
+    with rasterio.open(dem_path) as dem:
+        # Transform GPS (WGS84) to DEM's CRS
+        transformer = Transformer.from_crs("EPSG:4326", dem.crs, always_xy=True)
+        x, y = transformer.transform(lon, lat)
+        
+        # Sample the DEM at the transformed coordinate
+        elevation = list(dem.sample([(x, y)]))[0][0]
+        
+        return float(elevation)
+
+
+
 # ---------------- Main Mapper Class ----------------
 class DroneMapper:
     def __init__(self, drone_offset_north=DRONE_OFFSET_NORTH, drone_offset_east=DRONE_OFFSET_EAST,
@@ -162,7 +189,7 @@ class DroneMapper:
         self.DRONE_OFFSET_UP = drone_offset_up
         self.PANEL_HEIGHT_CORRECTION = panel_height
 
-    def get_target_gps(self, u, v, gps, angles, image_size):
+    def get_target_gps(self, u, v, gps, angles, image_size, dem_path= None):
         # Skip if GPS or angles are invalid
         if gps is None or None in gps[:2] or any(a is None for a in angles):
             return None, None
@@ -177,7 +204,12 @@ class DroneMapper:
         cam.intrinsics(width, height, f_px, cx, cy)
 
         ext = Extrinsics()
-        corrected_altitude = rel_alt - self.PANEL_HEIGHT_CORRECTION + self.DRONE_OFFSET_UP
+        if dem_path:
+            ground_height = get_elevation_from_dem(dem_path=dem_path, lat=drone_lat, lon= drone_lon)
+            corrected_altitude= drone_alt - ground_height - self.PANEL_HEIGHT_CORRECTION + self.DRONE_OFFSET_UP
+
+        else:
+            corrected_altitude = rel_alt - self.PANEL_HEIGHT_CORRECTION + self.DRONE_OFFSET_UP
         ext.setPose(
             X=self.DRONE_OFFSET_EAST,
             Y=self.DRONE_OFFSET_NORTH,
@@ -195,12 +227,12 @@ class DroneMapper:
         target_lat, target_lon = enu_to_gps(target_3D[0], target_3D[1], drone_lat, drone_lon)
         return target_lat, target_lon
 
-    def get_target_gps_array(self, data_array):
+    def get_target_gps_array(self, data_array, dem_path= None):
         for data in data_array:
             u = data.get('pixel_x', data['image_size'][0] / 2)
             v = data.get('pixel_y', data['image_size'][1] / 2)
             yaw, pitch, roll = data['yaw'], data['pitch'], data['roll']
-            lat_lon = self.get_target_gps(u, v, gps=data['gps'], angles=(yaw, pitch, roll), image_size=data['image_size'])
+            lat_lon = self.get_target_gps(u, v, gps=data['gps'], angles=(yaw, pitch, roll), image_size=data['image_size'], dem_path=dem_path)
             data['target_gps'] = lat_lon if lat_lon != (None, None) else None
         return data_array
 
