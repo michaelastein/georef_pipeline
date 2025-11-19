@@ -14,13 +14,13 @@ from pathlib import Path
 from plot_maps import plot_google_maps  # Function to plot points on Google Maps
 from plot_cad import plot_cad_map        # Optional CAD plotting function
 import laspy
-
+from scipy.interpolate import RegularGridInterpolator
+from scipy.spatial import cKDTree
 
 # ---------------- User Parameters ----------------
 DRONE_OFFSET_NORTH = 0.0
 DRONE_OFFSET_EAST  = 0.0
-DRONE_OFFSET_UP    = -10
-PANEL_HEIGHT_CORRECTION = 0.0  # Corrects for panel height if needed
+DRONE_OFFSET_UP    = 0
 
 # ---------------- Utility Functions ----------------
 
@@ -203,113 +203,158 @@ def get_elevation_from_dem(dem_path: str, lat: float, lon: float) -> float:
     
 
 
-def get_elevation_from_laserscan(laz_path: str, lat: float, lon: float, utm_epsg: int = 25830) -> float:
-    """
-    Returns the orthometric height (Z) at a given GPS coordinate (decimal degrees)
-    from a .laz LiDAR tile.
 
+# ----------------- KD-Tree LAZ Utilities -----------------
+def laz_to_kdtree(laz_path):
+    """
+    Liest eine LAZ-Datei und erstellt einen KD-Tree für schnelle Höhenabfragen.
+    
     Args:
-        laz_path (str): Path to the .laz file
-        lat (float): Latitude in decimal degrees (e.g., 40.7080056)
-        lon (float): Longitude in decimal degrees (e.g., -4.437500)
-        utm_epsg (int): EPSG code of the LiDAR CRS (default 25830 = UTM 30N)
-
+        laz_path (str): Pfad zur LAZ-Datei
+    
     Returns:
-        float: Height in meters (orthometric)
+        cKDTree, np.ndarray: KD-Tree der XY-Koordinaten, Array der Z-Werte
     """
-
-    # Load LAZ
     las = laspy.read(laz_path)
+    points_xy = np.vstack((las.x, las.y)).T
+    points_z = np.array(las.z)
+    tree = cKDTree(points_xy)
+    return tree, points_z
 
-    # Extract coordinates
-    x = np.array(las.x)
-    y = np.array(las.y)
-    z = np.array(las.z)
-
-    # Transform GPS → LiDAR UTM coordinates
+def get_height_from_laser_kdtree(tree, z_values, lon, lat, utm_epsg=25830, k=5):
+    """
+    Gibt die Höhe für ein GPS-Koordinate aus der Punktwolke zurück.
+    Mittlerer Z-Wert der k nächsten Punkte.
+    
+    Args:
+        tree (cKDTree): KD-Tree der XY-Koordinaten
+        z_values (np.ndarray): Array der Z-Werte
+        lon (float): GPS-Lon
+        lat (float): GPS-Lat
+        utm_epsg (int): EPSG-Code für UTM
+        k (int): Anzahl der nächsten Nachbarn für Mittelwert
+    
+    Returns:
+        float: interpolierte Höhe
+    """
     transformer = Transformer.from_crs("EPSG:4326", f"EPSG:{utm_epsg}", always_xy=True)
-    x_target, y_target = transformer.transform(lon, lat)
-
-    # Distance to all points
-    distances = np.sqrt((x - x_target)**2 + (y - y_target)**2)
-
-    if len(distances) == 0:
-        raise ValueError("No points found in LAZ file.")
-
-    # Closest point
-    nearest_index = np.argmin(distances)
-    height = z[nearest_index]
-
-    print(f"Nearest LiDAR point: X={x[nearest_index]:.2f}, Y={y[nearest_index]:.2f}")
-    print(f"Input GPS: lat={lat:.6f}, lon={lon:.6f}")
-    print(f"Height: {height:.2f} m (orthometric)")
-
-    return height
+    x, y = transformer.transform(lon, lat)
+    dists, idxs = tree.query([x, y], k=k)
+    z_nearest = z_values[idxs]
+    return float(np.mean(z_nearest))
 
 
 
 # ---------------- Main Mapper Class ----------------
 class DroneMapper:
     def __init__(self, drone_offset_north=DRONE_OFFSET_NORTH, drone_offset_east=DRONE_OFFSET_EAST,
-                 drone_offset_up=DRONE_OFFSET_UP, panel_height=PANEL_HEIGHT_CORRECTION):
+                 drone_offset_up=DRONE_OFFSET_UP, 
+                 lidar_path=None, dem_path=None):
         self.DRONE_OFFSET_NORTH = drone_offset_north
         self.DRONE_OFFSET_EAST = drone_offset_east
         self.DRONE_OFFSET_UP = drone_offset_up
-        self.PANEL_HEIGHT_CORRECTION = panel_height
+        self.dem_path = dem_path
+        self.tree = None
+        self.points_z = None
+        if lidar_path:
+            self.tree, self.points_z = laz_to_kdtree(lidar_path)
 
-    def get_target_gps(self, u, v, gps, angles, image_size, dem_path= None, lidar_path = None):
-        # Skip if GPS or angles are invalid
-        if gps is None or None in gps[:2] or any(a is None for a in angles):
+
+
+    def get_target_gps(self, u, v, gps, angles, image_size):
+        if gps is None or any(a is None for a in angles):
             return None, None
+
         drone_lat, drone_lon, drone_alt, rel_alt = gps
-        yaw, pitch, roll = angles
         width, height = image_size
+        yaw, pitch, roll = angles
+
 
         cam = Camera()
         f_px = 13 * width / 10.88
-        cx = width / 2
-        cy = height / 2
-        cam.intrinsics(width, height, f_px, cx, cy)
+        cam.intrinsics(width, height, f_px, width / 2, height / 2)
 
+
+      
         ext = Extrinsics()
-        if dem_path:
-            ground_height = get_elevation_from_dem(dem_path=dem_path, lat=drone_lat, lon= drone_lon)
-            corrected_altitude= drone_alt - ground_height - self.PANEL_HEIGHT_CORRECTION + self.DRONE_OFFSET_UP
-            print("corrected_altitude " + str(corrected_altitude))
-            print("rel_alt " + str(rel_alt))
-        
-        elif lidar_path: 
-            ground_height = get_elevation_from_laserscan(laz_path= lidar_path, lat=drone_lat, lon= drone_lon)
-            corrected_altitude= drone_alt - ground_height - self.PANEL_HEIGHT_CORRECTION + self.DRONE_OFFSET_UP
-            print("corrected_altitude " + str(corrected_altitude))
-            print("rel_alt " + str(rel_alt))
-
-
-        else:
-            corrected_altitude = rel_alt - self.PANEL_HEIGHT_CORRECTION + self.DRONE_OFFSET_UP
         ext.setPose(
             X=self.DRONE_OFFSET_EAST,
             Y=self.DRONE_OFFSET_NORTH,
-            Z=corrected_altitude,
+            Z=(drone_alt + self.DRONE_OFFSET_UP),
             roll=-roll,
-            pitch=90 - pitch,
+            pitch=-90 - pitch,  # downward-looking camera
             yaw=-yaw - 90,
             order="ZYX"
         )
         ext.setGimbal(roll=0, pitch=0, yaw=0, order="ZYX")
         cam.attitudeMat(ext.transform())
 
-        plane = np.array([0, 0, 1, 0])
-        target_3D = cam.reprojectToPlane(pixel_to_camproject(u, v, width, height), plane)
-        target_lat, target_lon = enu_to_gps(target_3D[0], target_3D[1], drone_lat, drone_lon)
-        return target_lat, target_lon
+        # Ray from camera to world
+        plane_near = np.array([0, 0, 1, -0.1])
+        plane_far = np.array([0, 0, 1, -1000])
+        p_near = cam.reprojectToPlane(pixel_to_camproject(u, v, width, height), plane_near)[:3]
+        p_far  = cam.reprojectToPlane(pixel_to_camproject(u, v, width, height), plane_far)[:3]
+        ray_dir = p_far - p_near
+        ray_dir /= np.linalg.norm(ray_dir)
+        R = ext.transform()[:3, :3]
+        ray_dir_world = R @ ray_dir
 
-    def get_target_gps_array(self, data_array, dem_path= None, lidar_path = None):
+ 
+
+        # If ray points upward, fallback to flat plane
+        if ray_dir_world[2] >= 0 or (self.tree is None and self.dem_path is None):
+            plane = np.array([0, 0, 1, 0])
+            target_3D = cam.reprojectToPlane(pixel_to_camproject(u, v, width, height), plane)
+            lat, lon = enu_to_gps(target_3D[0], target_3D[1], drone_lat, drone_lon)
+            return lat, lon
+
+
+        # Ray-march for intersection with ground
+        step = 1.0
+        max_distance = 200.0
+        Z_cam = drone_alt  + self.DRONE_OFFSET_UP
+        drone_xyz = np.array([0.0, 0.0, Z_cam])
+
+
+        for t in np.arange(0, max_distance, step):
+            pos = drone_xyz + t * ray_dir_world
+            lat, lon = enu_to_gps(pos[0], pos[1], drone_lat, drone_lon)
+            Z_surface = None
+
+            # Try LiDAR first
+            if self.tree is not None:
+                try:
+                    Z_surface = get_height_from_laser_kdtree(self.tree, self.points_z, lon, lat)
+                except Exception:
+                    Z_surface = None
+
+            # Fallback to DEM
+            if Z_surface is None and self.dem_path:
+                try:
+                    Z_surface = get_elevation_from_dem(self.dem_path, lat, lon)
+                except Exception:
+                    Z_surface = None
+
+
+
+            if pos[2] <= Z_surface:
+                return lat, lon
+
+        # No intersection found → fallback to flat plane
+        ground_height = (drone_alt + self.DRONE_OFFSET_UP) - rel_alt
+        plane = np.array([0, 0, 1, -ground_height])
+
+        target_3D = cam.reprojectToPlane(pixel_to_camproject(u, v, width, height), plane)
+        lat, lon = enu_to_gps(target_3D[0], target_3D[1], drone_lat, drone_lon)
+        return lat, lon
+
+
+    def get_target_gps_array(self, data_array):
         for data in data_array:
             u = data.get('pixel_x', data['image_size'][0] / 2)
             v = data.get('pixel_y', data['image_size'][1] / 2)
             yaw, pitch, roll = data['yaw'], data['pitch'], data['roll']
-            lat_lon = self.get_target_gps(u, v, gps=data['gps'], angles=(yaw, pitch, roll), image_size=data['image_size'], dem_path=dem_path, lidar_path = lidar_path)
+            lat_lon = self.get_target_gps(u, v, gps=data['gps'], angles=(yaw, pitch, roll), image_size=data['image_size'])
             data['target_gps'] = lat_lon if lat_lon != (None, None) else None
         return data_array
 
