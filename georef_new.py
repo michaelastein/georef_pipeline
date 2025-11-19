@@ -303,7 +303,9 @@ class DroneMapper:
 
         # If ray points upward, fallback to flat plane
         if ray_dir_world[2] >= 0 or (self.tree is None and self.dem_path is None):
-            plane = np.array([0, 0, 1, 0])
+            ground_height = (drone_alt + self.DRONE_OFFSET_UP) - rel_alt
+
+            plane = np.array([0, 0, 1, -ground_height])
             target_3D = cam.reprojectToPlane(pixel_to_camproject(u, v, width, height), plane)
             lat, lon = enu_to_gps(target_3D[0], target_3D[1], drone_lat, drone_lon)
             return lat, lon
@@ -329,7 +331,7 @@ class DroneMapper:
                     Z_surface = None
 
             # Fallback to DEM
-            if Z_surface is None and self.dem_path:
+            else:
                 try:
                     Z_surface = get_elevation_from_dem(self.dem_path, lat, lon)
                 except Exception:
@@ -342,11 +344,16 @@ class DroneMapper:
 
         # No intersection found → fallback to flat plane
         ground_height = (drone_alt + self.DRONE_OFFSET_UP) - rel_alt
+
+
         plane = np.array([0, 0, 1, -ground_height])
 
         target_3D = cam.reprojectToPlane(pixel_to_camproject(u, v, width, height), plane)
         lat, lon = enu_to_gps(target_3D[0], target_3D[1], drone_lat, drone_lon)
         return lat, lon
+
+
+
 
 
     def get_target_gps_array(self, data_array):
