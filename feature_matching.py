@@ -675,9 +675,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None,
         adj.setdefault(b, set()).add(a)
 
     # ---------------------- Correspondences ----------------------
-    # ---------------------- Correspondences ----------------------
 
-    def build_correspondences_from_pixels(idx, x, y, image_data_list, pixel_tol=1e-3):
     def build_correspondences_from_pixels(idx, x, y, image_data_list, pixel_tol=1e-3):
         """
         Given a pixel location in one image (idx), compute its corresponding pixel locations
@@ -758,78 +756,6 @@ def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None,
 
             
 
-        Given a pixel location in one image (idx), compute its corresponding pixel locations
-        in all connected images using the homography graph.
-        Duplicate correspondences are removed by rounding pixels to avoid near-duplicate entries.
-        The source image is always the first element in the returned list.
-        Correspondences that fall outside image bounds are skipped.
-        Final pixel coordinates are rounded to integers.
-        """
-        pt = np.array([[x], [y], [1.0]])  # Homogeneous coordinate
-        correspondences_set = set()
-
-        # Add source pixel (rounded to int)
-        px_rounded = int(round(x))
-        py_rounded = int(round(y))
-        correspondences_set.add((idx, px_rounded, py_rounded))
-
-        comp = node_connected_component(idx, adj)  # Get all connected images
-
-        for other in comp:
-            if other == idx:
-                continue
-
-            path = shortest_path(idx, other, adj)
-            if path is None:
-                continue
-
-            cur_pt = pt.copy()
-            ok = True
-
-            # Apply homographies along the path
-            for k in range(len(path) - 1):
-                a, b = path[k], path[k + 1]
-                H = H_dict.get((a, b))
-                if H is None:
-                    ok = False
-                    break
-                try:
-                    cur_pt = H @ cur_pt
-                    if abs(cur_pt[2, 0]) < 1e-8:
-                        ok = False
-                        break
-                    cur_pt /= cur_pt[2, 0]  # normalize after each step
-                except Exception:
-                    ok = False
-                    break
-
-            # Only add if within image bounds
-            if ok:
-                w, h = image_data_list[other]["image_size"]
-                px, py = cur_pt[0, 0], cur_pt[1, 0]
-                if 0 <= px < w and 0 <= py < h:
-                    px_int = int(round(px))
-                    py_int = int(round(py))
-                    correspondences_set.add((other, px_int, py_int))
-
-        # Build final data with pixel info, ensuring source image is first
-        result = []
-
-        # Add source image first
-        entry = image_data_list[idx].copy()
-        entry.update({"pixel_x": int(round(x)),
-                    "pixel_y": int(round(y))})
-        result.append(entry)
-
-        # Add other correspondences
-        for img_idx, px, py in correspondences_set:
-            if img_idx == idx:
-                continue
-            entry = image_data_list[img_idx].copy()
-            entry.update({"pixel_x": px, "pixel_y": py})
-            result.append(entry)
-
-        return result
 
 
 
