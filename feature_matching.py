@@ -191,6 +191,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None,
     start_time = time.time()
     match_cache, H_dict, H_inliers = {}, {}, {}
     original_image_size = image_size
+    cad_path = cad_path
 
     
 
@@ -520,7 +521,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None,
             idx, x, y,
             image_data_list=image_data_list
         )
-        avg_gps.main(correspondence_data, dem_path= dem_path, lidar_path = lidar_path, cad_path= None)
+        avg_gps.main(correspondence_data, dem_path= dem_path, lidar_path = lidar_path, cad_path= cad_path)
         if csv_path:
             import matching_anomalies
 
@@ -536,7 +537,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None,
 
     elif anomalies == "batch":
         # Launch batch anomaly processing
-        anomalies_batch.main(image_data_list, build_corr_func=build_correspondences_from_pixels, dem_path= dem_path, lidar_path = lidar_path,  original_image_size= original_image_size, cad_path= None)
+        anomalies_batch.main(image_data_list, build_corr_func=build_correspondences_from_pixels, dem_path= dem_path, lidar_path = lidar_path,  original_image_size= original_image_size, cad_path= cad_path)
 
     else:
         def click_callback(idx, x, y, gui):
@@ -546,7 +547,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None,
                 image_data_list=image_data_list
             )
 
-            avg_gps.main(data, dem_path= dem_path, lidar_path = lidar_path, cad_path= None)
+            avg_gps.main(data, dem_path= dem_path, lidar_path = lidar_path, cad_path= cad_path)
             return data  # returned data will be drawn as yellow markers
 
         gui = gui_canvas.CanvasGUI(image_data_list, orig_sizes, click_callback=click_callback)
