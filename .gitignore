@@ -7,4 +7,4 @@ __pycache__/
 *.geojson
 *.tif
 *.pkl
-
+*.laz
