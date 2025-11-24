@@ -6,59 +6,44 @@ from tkinter import filedialog
 import sys
 import os
 from PIL import Image, ImageTk
-import pyproj
+from pyproj import Transformer, CRS
 import csv
 import rasterio
-from pyproj import Transformer
 from pathlib import Path
 from plot_maps import plot_google_maps  # Function to plot points on Google Maps
 from plot_cad import plot_cad_map        # Optional CAD plotting function
 import laspy
-from scipy.interpolate import RegularGridInterpolator
 from scipy.spatial import cKDTree
 
 # ---------------- User Parameters ----------------
 DRONE_OFFSET_NORTH = 0.0
 DRONE_OFFSET_EAST  = 0.0
-DRONE_OFFSET_UP    = 0
+DRONE_OFFSET_UP    = 0.0
+UTM_EPSG = 25832  # UTM32 / ETRS89
 
 # ---------------- Utility Functions ----------------
 
-
 def extract_metadata_from_csv(img_paths, image_columns=None):
-    """
-    Extract metadata from a CSV file for given images.
-    
-    Args:
-        img_paths (list of str): List of image file paths.
-        image_columns (list of str, optional): Possible column names for image filenames.
-            Defaults to ["wiris_image", "pi_image", "image_name"].
-    
-    Returns:
-        list of dict: Metadata entries for each image.
-    """
+    """Extract metadata from CSV in same folder."""
     if image_columns is None:
         image_columns = ["wiris_image", "pi_image", "image_name"]
-        
+
     folder = Path(img_paths[0]).parent
     csv_files = list(folder.glob("*.csv"))
 
     if len(csv_files) != 1:
-        from tkinter.filedialog import askopenfilename
-        csv_path = askopenfilename(title="Select CSV file", filetypes=[("CSV files", "*.csv")])
+        csv_path = filedialog.askopenfilename(title="Select CSV file", filetypes=[("CSV files", "*.csv")])
         if not csv_path:
             raise FileNotFoundError("No CSV file selected")
     else:
         csv_path = str(csv_files[0])
 
     print(f"Using CSV file: {csv_path}")
-    
     metadata_dict = {}
     with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
             img_file = None
-            # Try multiple possible columns for image filename
             for col in image_columns:
                 if col in row and row[col].strip():
                     img_file = row[col].strip()
@@ -66,6 +51,7 @@ def extract_metadata_from_csv(img_paths, image_columns=None):
             if not img_file:
                 continue
             try:
+                cheight_col = "CHeight" if "CHeight" in row else "Cheight" if "Cheight" in row else None
                 metadata_dict[img_file] = {
                     "lat": float(row.get("Latitude", "nan")),
                     "lon": float(row.get("Longitude", "nan")),
@@ -73,7 +59,7 @@ def extract_metadata_from_csv(img_paths, image_columns=None):
                     "yaw": float(row.get("GimbalYawE", "nan")),
                     "pitch": float(row.get("pitch_agisoft", "nan")),
                     "roll": float(row.get("roll", "nan")),
-                    "rel_alt": float(row.get("CHeight", "nan"))
+                    "rel_alt": float(row.get(cheight_col, "nan")) if cheight_col else float("nan")
                 }
             except ValueError:
                 print(f"Warning: Invalid CSV values for {img_file}, skipping metadata.")
@@ -102,17 +88,18 @@ def extract_metadata_from_csv(img_paths, image_columns=None):
     return data_entries
 
 
-
 def enu_to_gps(x, y, origin_lat, origin_lon):
-    zone = int((origin_lon + 180)/6)+1
-    epsg_code = 32600 + zone if origin_lat >= 0 else 32700 + zone
-    utm_crs = pyproj.CRS.from_epsg(epsg_code)
-    t_to_utm = pyproj.Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True)
-    t_from_utm = pyproj.Transformer.from_crs(utm_crs, "EPSG:4326", always_xy=True)
-    utm_x0, utm_y0 = t_to_utm.transform(origin_lon, origin_lat)
+    """
+    Convert ENU (meters) offsets to GPS (lat/lon) using UTM32/ETRS89 as reference.
+    """
+    # Transformer from WGS84 to UTM32
+    transformer_to_utm = Transformer.from_crs("EPSG:4326", f"EPSG:{UTM_EPSG}", always_xy=True)
+    transformer_from_utm = Transformer.from_crs(f"EPSG:{UTM_EPSG}", "EPSG:4326", always_xy=True)
+
+    utm_x0, utm_y0 = transformer_to_utm.transform(origin_lon, origin_lat)
     utm_x = utm_x0 + x
     utm_y = utm_y0 + y
-    lon, lat = t_from_utm.transform(utm_x, utm_y)
+    lon, lat = transformer_from_utm.transform(utm_x, utm_y)
     return lat, lon
 
 
@@ -136,8 +123,6 @@ def select_pixel_gui(img_array):
     width, height = img_array.shape[1], img_array.shape[0]
     u = clicked_point.get('u', width // 2)
     v = clicked_point.get('v', height // 2)
-    print(u)
-    print("selected pixel")
     return u, v
 
 
@@ -178,68 +163,27 @@ def show_image_with_buttons(img_array, u, v, filename):
     root.mainloop()
 
 
-
 def get_elevation_from_dem(dem_path: str, lat: float, lon: float) -> float:
-    """
-    Returns the elevation at a given GPS coordinate from a DEM (.tif).
-
-    Args:
-        dem_path (str): Path to the DEM file (.tif)
-        lat (float): Latitude of the point in degrees
-        lon (float): Longitude of the point in degrees
-
-    Returns:
-        float: Elevation in meters at the given GPS point
-    """
     with rasterio.open(dem_path) as dem:
-        # Transform GPS (WGS84) to DEM's CRS
         transformer = Transformer.from_crs("EPSG:4326", dem.crs, always_xy=True)
         x, y = transformer.transform(lon, lat)
-        
-        # Sample the DEM at the transformed coordinate
         elevation = list(dem.sample([(x, y)]))[0][0]
-        
         return float(elevation)
-    
-
 
 
 # ----------------- KD-Tree LAZ Utilities -----------------
-def laz_to_kdtree(laz_path):
-    """
-    Liest eine LAZ-Datei und erstellt einen KD-Tree für schnelle Höhenabfragen.
-    
-    Args:
-        laz_path (str): Pfad zur LAZ-Datei
-    
-    Returns:
-        cKDTree, np.ndarray: KD-Tree der XY-Koordinaten, Array der Z-Werte
-    """
+def laz_to_kdtree(laz_path, utm_epsg=UTM_EPSG):
     las = laspy.read(laz_path)
-    points_xy = np.vstack((las.x, las.y)).T
+    transformer = Transformer.from_crs(f"EPSG:{utm_epsg}", "EPSG:4326", always_xy=True)
+    lons, lats = transformer.transform(las.x, las.y)
+    points_xy = np.vstack((lons, lats)).T
     points_z = np.array(las.z)
     tree = cKDTree(points_xy)
     return tree, points_z
 
-def get_height_from_laser_kdtree(tree, z_values, lon, lat, utm_epsg=25830, k=5):
-    """
-    Gibt die Höhe für ein GPS-Koordinate aus der Punktwolke zurück.
-    Mittlerer Z-Wert der k nächsten Punkte.
-    
-    Args:
-        tree (cKDTree): KD-Tree der XY-Koordinaten
-        z_values (np.ndarray): Array der Z-Werte
-        lon (float): GPS-Lon
-        lat (float): GPS-Lat
-        utm_epsg (int): EPSG-Code für UTM
-        k (int): Anzahl der nächsten Nachbarn für Mittelwert
-    
-    Returns:
-        float: interpolierte Höhe
-    """
-    transformer = Transformer.from_crs("EPSG:4326", f"EPSG:{utm_epsg}", always_xy=True)
-    x, y = transformer.transform(lon, lat)
-    dists, idxs = tree.query([x, y], k=k)
+
+def get_height_from_laser_kdtree(tree, z_values, lon, lat, k=5):
+    dists, idxs = tree.query([lon, lat], k=k)
     z_nearest = z_values[idxs]
     return float(np.mean(z_nearest))
 
@@ -248,8 +192,7 @@ def get_height_from_laser_kdtree(tree, z_values, lon, lat, utm_epsg=25830, k=5):
 # ---------------- Main Mapper Class ----------------
 class DroneMapper:
     def __init__(self, drone_offset_north=DRONE_OFFSET_NORTH, drone_offset_east=DRONE_OFFSET_EAST,
-                 drone_offset_up=DRONE_OFFSET_UP, 
-                 lidar_path=None, dem_path=None):
+                 drone_offset_up=DRONE_OFFSET_UP, lidar_path=None, dem_path=None):
         self.DRONE_OFFSET_NORTH = drone_offset_north
         self.DRONE_OFFSET_EAST = drone_offset_east
         self.DRONE_OFFSET_UP = drone_offset_up
@@ -257,9 +200,7 @@ class DroneMapper:
         self.tree = None
         self.points_z = None
         if lidar_path:
-            self.tree, self.points_z = laz_to_kdtree(lidar_path)
-
-
+            self.tree, self.points_z = laz_to_kdtree(lidar_path, utm_epsg=UTM_EPSG)
 
     def get_target_gps(self, u, v, gps, angles, image_size):
         if gps is None or any(a is None for a in angles):
@@ -269,20 +210,22 @@ class DroneMapper:
         width, height = image_size
         yaw, pitch, roll = angles
 
+        print("Plane computation inputs:")
+        print(f"drone_alt={drone_alt}, rel_alt={rel_alt}, u={u}, v={v}, width={width}, height={height}")
+
+
 
         cam = Camera()
         f_px = 13 * width / 10.88
         cam.intrinsics(width, height, f_px, width / 2, height / 2)
 
-
-      
         ext = Extrinsics()
         ext.setPose(
             X=self.DRONE_OFFSET_EAST,
             Y=self.DRONE_OFFSET_NORTH,
             Z=(drone_alt + self.DRONE_OFFSET_UP),
             roll=-roll,
-            pitch=-90 - pitch,  # downward-looking camera
+            pitch=-90 - pitch,
             yaw=-yaw - 90,
             order="ZYX"
         )
@@ -293,68 +236,53 @@ class DroneMapper:
         plane_near = np.array([0, 0, 1, -0.1])
         plane_far = np.array([0, 0, 1, -1000])
         p_near = cam.reprojectToPlane(pixel_to_camproject(u, v, width, height), plane_near)[:3]
-        p_far  = cam.reprojectToPlane(pixel_to_camproject(u, v, width, height), plane_far)[:3]
+        p_far = cam.reprojectToPlane(pixel_to_camproject(u, v, width, height), plane_far)[:3]
         ray_dir = p_far - p_near
         ray_dir /= np.linalg.norm(ray_dir)
         R = ext.transform()[:3, :3]
         ray_dir_world = R @ ray_dir
 
- 
-
-        # If ray points upward, fallback to flat plane
+        # If ray points upward or no LiDAR/DEM → fallback to flat plane
         if ray_dir_world[2] >= 0 or (self.tree is None and self.dem_path is None):
             ground_height = (drone_alt + self.DRONE_OFFSET_UP) - rel_alt
-
             plane = np.array([0, 0, 1, -ground_height])
             target_3D = cam.reprojectToPlane(pixel_to_camproject(u, v, width, height), plane)
             lat, lon = enu_to_gps(target_3D[0], target_3D[1], drone_lat, drone_lon)
             return lat, lon
 
-
         # Ray-march for intersection with ground
         step = 1.0
         max_distance = 200.0
-        Z_cam = drone_alt  + self.DRONE_OFFSET_UP
+        Z_cam = drone_alt + self.DRONE_OFFSET_UP
         drone_xyz = np.array([0.0, 0.0, Z_cam])
-
 
         for t in np.arange(0, max_distance, step):
             pos = drone_xyz + t * ray_dir_world
             lat, lon = enu_to_gps(pos[0], pos[1], drone_lat, drone_lon)
             Z_surface = None
 
-            # Try LiDAR first
             if self.tree is not None:
                 try:
                     Z_surface = get_height_from_laser_kdtree(self.tree, self.points_z, lon, lat)
                 except Exception:
                     Z_surface = None
-
-            # Fallback to DEM
-            else:
+            elif self.dem_path:
                 try:
                     Z_surface = get_elevation_from_dem(self.dem_path, lat, lon)
                 except Exception:
                     Z_surface = None
 
-
-
-            if pos[2] <= Z_surface:
+            if Z_surface is not None and pos[2] <= Z_surface:
                 return lat, lon
 
-        # No intersection found → fallback to flat plane
+        # Fallback to flat plane
         ground_height = (drone_alt + self.DRONE_OFFSET_UP) - rel_alt
-
-
         plane = np.array([0, 0, 1, -ground_height])
+        print("Ground height:", ground_height)
 
         target_3D = cam.reprojectToPlane(pixel_to_camproject(u, v, width, height), plane)
         lat, lon = enu_to_gps(target_3D[0], target_3D[1], drone_lat, drone_lon)
         return lat, lon
-
-
-
-
 
     def get_target_gps_array(self, data_array):
         for data in data_array:
@@ -367,7 +295,6 @@ class DroneMapper:
 
     def process_images_gui(self, img_paths):
         data_array = extract_metadata_from_csv(img_paths)
-
         for entry in data_array:
             img = Image.open(entry['image_name'])
             img_array = np.array(img)
@@ -386,22 +313,17 @@ class DroneMapper:
 
         for entry in data_array:
             if entry.get('target_gps') is not None:
-                root.after(0, lambda e=entry: plot_google_maps(
-                    target_gps=e['target_gps'],
-                    corner_gps=None,
-                    drone_gps=(e['gps'][0] + self.DRONE_OFFSET_NORTH,
-                               e['gps'][1] + self.DRONE_OFFSET_EAST)
-                ))
-                root.after(0, lambda e=entry: plot_cad_map(
-                    target_gps=e['target_gps'],
-                    corner_gps=None,
-                    drone_gps=(e['gps'][0] + self.DRONE_OFFSET_NORTH,
-                               e['gps'][1] + self.DRONE_OFFSET_EAST)
-                ))
+                lat, lon = entry['target_gps']
+                plot_google_maps(target_gps=(lat, lon),
+                                 corner_gps=None,
+                                 drone_gps=(entry['gps'][0] + self.DRONE_OFFSET_NORTH,
+                                            entry['gps'][1] + self.DRONE_OFFSET_EAST))
+                plot_cad_map(target_gps=(lat, lon),
+                             corner_gps=None,
+                             drone_gps=(entry['gps'][0] + self.DRONE_OFFSET_NORTH,
+                                        entry['gps'][1] + self.DRONE_OFFSET_EAST))
             show_image_with_buttons(img_array, u, v, filename=entry['image_name'])
 
-
-# ---------------- CLI ----------------
 if __name__ == "__main__":
     root = tk.Tk()
     root.withdraw()
