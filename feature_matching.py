@@ -543,7 +543,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None,
                 image_data_list=image_data_list
             )
 
-            avg_gps.main(data, dem_path= dem_path, lidar_path = lidar_path)
+            avg_gps.main(data, dem_path= dem_path, lidar_path = lidar_path, plot_map = True)
             return data  # returned data will be drawn as yellow markers
 
         gui = gui_canvas.CanvasGUI(image_data_list, orig_sizes, click_callback=click_callback)

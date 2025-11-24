@@ -14,6 +14,7 @@ from plot_maps import plot_google_maps  # Function to plot points on Google Maps
 from plot_cad import plot_cad_map        # Optional CAD plotting function
 import laspy
 from scipy.spatial import cKDTree
+import pyproj
 
 # ---------------- User Parameters ----------------
 DRONE_OFFSET_NORTH = 0.0
@@ -88,20 +89,35 @@ def extract_metadata_from_csv(img_paths, image_columns=None):
     return data_entries
 
 
-def enu_to_gps(x, y, origin_lat, origin_lon):
+def enu_or_utm_to_gps(x, y, origin_lat=None, origin_lon=None, utm_epsg=25832):
     """
-    Convert ENU (meters) offsets to GPS (lat/lon) using UTM32/ETRS89 as reference.
+    Convert coordinates to GPS (lat/lon).
+    
+    Parameters:
+    - x, y: Coordinates in meters (either ENU relative or UTM absolute)
+    - origin_lat, origin_lon: If provided, treats x,y as ENU offsets from this origin
+    - utm_epsg: EPSG code to use if x,y are already in UTM (default 25832 = ETRS89/UTM32N)
+    
+    Returns:
+    - lat, lon in degrees
     """
-    # Transformer from WGS84 to UTM32
-    transformer_to_utm = Transformer.from_crs("EPSG:4326", f"EPSG:{UTM_EPSG}", always_xy=True)
-    transformer_from_utm = Transformer.from_crs(f"EPSG:{UTM_EPSG}", "EPSG:4326", always_xy=True)
-
-    utm_x0, utm_y0 = transformer_to_utm.transform(origin_lon, origin_lat)
-    utm_x = utm_x0 + x
-    utm_y = utm_y0 + y
-    lon, lat = transformer_from_utm.transform(utm_x, utm_y)
+    if origin_lat is not None and origin_lon is not None:
+        # ENU relative -> dynamic UTM
+        zone = int((origin_lon + 180) / 6) + 1
+        epsg_code = 32600 + zone if origin_lat >= 0 else 32700 + zone
+        utm_crs = pyproj.CRS.from_epsg(epsg_code)
+        t_to_utm = pyproj.Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True)
+        t_from_utm = pyproj.Transformer.from_crs(utm_crs, "EPSG:4326", always_xy=True)
+        utm_x0, utm_y0 = t_to_utm.transform(origin_lon, origin_lat)
+        utm_x = utm_x0 + x
+        utm_y = utm_y0 + y
+        lon, lat = t_from_utm.transform(utm_x, utm_y)
+    else:
+        # Already in UTM -> fixed EPSG
+        transformer = pyproj.Transformer.from_crs(f"EPSG:{utm_epsg}", "EPSG:4326", always_xy=True)
+        lon, lat = transformer.transform(x, y)
+    
     return lat, lon
-
 
 def pixel_to_camproject(u, v, width, height):
     return np.array([width - 1 - u, height - 1 - v])
@@ -247,7 +263,7 @@ class DroneMapper:
             ground_height = (drone_alt + self.DRONE_OFFSET_UP) - rel_alt
             plane = np.array([0, 0, 1, -ground_height])
             target_3D = cam.reprojectToPlane(pixel_to_camproject(u, v, width, height), plane)
-            lat, lon = enu_to_gps(target_3D[0], target_3D[1], drone_lat, drone_lon)
+            lat, lon = enu_or_utm_to_gps(target_3D[0], target_3D[1], drone_lat, drone_lon)
             return lat, lon
 
         # Ray-march for intersection with ground
@@ -258,7 +274,7 @@ class DroneMapper:
 
         for t in np.arange(0, max_distance, step):
             pos = drone_xyz + t * ray_dir_world
-            lat, lon = enu_to_gps(pos[0], pos[1], drone_lat, drone_lon)
+            lat, lon = enu_or_utm_to_gps(pos[0], pos[1], drone_lat, drone_lon)
             Z_surface = None
 
             if self.tree is not None:
@@ -281,7 +297,7 @@ class DroneMapper:
         print("Ground height:", ground_height)
 
         target_3D = cam.reprojectToPlane(pixel_to_camproject(u, v, width, height), plane)
-        lat, lon = enu_to_gps(target_3D[0], target_3D[1], drone_lat, drone_lon)
+        lat, lon = enu_or_utm_to_gps(target_3D[0], target_3D[1], drone_lat, drone_lon)
         return lat, lon
 
     def get_target_gps_array(self, data_array):
