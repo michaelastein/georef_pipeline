@@ -7,30 +7,21 @@ import sys
 import os
 from PIL import Image, ImageTk
 from pyproj import Transformer, CRS
-from pyproj import Transformer, CRS
 import csv
-import rasterio
 import rasterio
 from pathlib import Path
 from plot_maps import plot_google_maps  # Function to plot points on Google Maps
 from plot_cad import plot_cad_map        # Optional CAD plotting function
 import laspy
 from scipy.spatial import cKDTree
-import pyproj
 
 # ---------------- User Parameters ----------------
 DRONE_OFFSET_NORTH = 0.0
 DRONE_OFFSET_EAST  = 0.0
 DRONE_OFFSET_UP    = 0.0
 UTM_EPSG = 25832  # UTM32 / ETRS89
-UTM_EPSG = 25832  # UTM32 / ETRS89
 
 # ---------------- Utility Functions ----------------
-
-def extract_metadata_from_csv(img_paths, image_columns=None):
-    """Extract metadata from CSV in same folder."""
-    if image_columns is None:
-        image_columns = ["wiris_image", "pi_image", "image_name"]
 
 def extract_metadata_from_csv(img_paths, image_columns=None):
     """Extract metadata from CSV in same folder."""
@@ -41,7 +32,6 @@ def extract_metadata_from_csv(img_paths, image_columns=None):
     csv_files = list(folder.glob("*.csv"))
 
     if len(csv_files) != 1:
-        csv_path = filedialog.askopenfilename(title="Select CSV file", filetypes=[("CSV files", "*.csv")])
         csv_path = filedialog.askopenfilename(title="Select CSV file", filetypes=[("CSV files", "*.csv")])
         if not csv_path:
             raise FileNotFoundError("No CSV file selected")
@@ -58,26 +48,8 @@ def extract_metadata_from_csv(img_paths, image_columns=None):
                 if col in row and row[col].strip():
                     img_file = row[col].strip()
                     break
-            img_file = None
-            for col in image_columns:
-                if col in row and row[col].strip():
-                    img_file = row[col].strip()
-                    break
             if not img_file:
                 continue
-            try:
-                cheight_col = "CHeight" if "CHeight" in row else "Cheight" if "Cheight" in row else None
-                metadata_dict[img_file] = {
-                    "lat": float(row.get("Latitude", "nan")),
-                    "lon": float(row.get("Longitude", "nan")),
-                    "alt": float(row.get("alt", "nan")),
-                    "yaw": float(row.get("GimbalYawE", "nan")),
-                    "pitch": float(row.get("pitch_agisoft", "nan")),
-                    "roll": float(row.get("roll", "nan")),
-                    "rel_alt": float(row.get(cheight_col, "nan")) if cheight_col else float("nan")
-                }
-            except ValueError:
-                print(f"Warning: Invalid CSV values for {img_file}, skipping metadata.")
             try:
                 cheight_col = "CHeight" if "CHeight" in row else "Cheight" if "Cheight" in row else None
                 metadata_dict[img_file] = {
@@ -107,7 +79,6 @@ def extract_metadata_from_csv(img_paths, image_columns=None):
         data_entries.append({
             "image_index": idx,
             "image_name": path,
-            "image_name": path,
             "gps": gps_tuple,
             "yaw": angles[0],
             "pitch": angles[1],
@@ -117,35 +88,20 @@ def extract_metadata_from_csv(img_paths, image_columns=None):
     return data_entries
 
 
-def enu_or_utm_to_gps(x, y, origin_lat=None, origin_lon=None, utm_epsg=25832):
+def enu_to_gps(x, y, origin_lat, origin_lon):
     """
-    Convert coordinates to GPS (lat/lon).
-    
-    Parameters:
-    - x, y: Coordinates in meters (either ENU relative or UTM absolute)
-    - origin_lat, origin_lon: If provided, treats x,y as ENU offsets from this origin
-    - utm_epsg: EPSG code to use if x,y are already in UTM (default 25832 = ETRS89/UTM32N)
-    
-    Returns:
-    - lat, lon in degrees
+    Convert ENU (meters) offsets to GPS (lat/lon) using UTM32/ETRS89 as reference.
     """
-    if origin_lat is not None and origin_lon is not None:
-        # ENU relative -> dynamic UTM
-        zone = int((origin_lon + 180) / 6) + 1
-        epsg_code = 32600 + zone if origin_lat >= 0 else 32700 + zone
-        utm_crs = pyproj.CRS.from_epsg(epsg_code)
-        t_to_utm = pyproj.Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True)
-        t_from_utm = pyproj.Transformer.from_crs(utm_crs, "EPSG:4326", always_xy=True)
-        utm_x0, utm_y0 = t_to_utm.transform(origin_lon, origin_lat)
-        utm_x = utm_x0 + x
-        utm_y = utm_y0 + y
-        lon, lat = t_from_utm.transform(utm_x, utm_y)
-    else:
-        # Already in UTM -> fixed EPSG
-        transformer = pyproj.Transformer.from_crs(f"EPSG:{utm_epsg}", "EPSG:4326", always_xy=True)
-        lon, lat = transformer.transform(x, y)
-    
+    # Transformer from WGS84 to UTM32
+    transformer_to_utm = Transformer.from_crs("EPSG:4326", f"EPSG:{UTM_EPSG}", always_xy=True)
+    transformer_from_utm = Transformer.from_crs(f"EPSG:{UTM_EPSG}", "EPSG:4326", always_xy=True)
+
+    utm_x0, utm_y0 = transformer_to_utm.transform(origin_lon, origin_lat)
+    utm_x = utm_x0 + x
+    utm_y = utm_y0 + y
+    lon, lat = transformer_from_utm.transform(utm_x, utm_y)
     return lat, lon
+
 
 def pixel_to_camproject(u, v, width, height):
     return np.array([width - 1 - u, height - 1 - v])
@@ -172,8 +128,6 @@ def select_pixel_gui(img_array):
 
 def show_image_with_buttons(img_array, u, v, filename):
     img_with_dot = img_array.copy()
-    if u is not None and v is not None:
-        cv2.circle(img_with_dot, (int(u), int(v)), radius=5, color=(0, 0, 255), thickness=-1)
     if u is not None and v is not None:
         cv2.circle(img_with_dot, (int(u), int(v)), radius=5, color=(0, 0, 255), thickness=-1)
     pil_img = Image.fromarray(cv2.cvtColor(img_with_dot, cv2.COLOR_BGR2RGB))
@@ -235,36 +189,9 @@ def get_height_from_laser_kdtree(tree, z_values, lon, lat, k=5):
 
 
 
-def get_elevation_from_dem(dem_path: str, lat: float, lon: float) -> float:
-    with rasterio.open(dem_path) as dem:
-        transformer = Transformer.from_crs("EPSG:4326", dem.crs, always_xy=True)
-        x, y = transformer.transform(lon, lat)
-        elevation = list(dem.sample([(x, y)]))[0][0]
-        return float(elevation)
-
-
-# ----------------- KD-Tree LAZ Utilities -----------------
-def laz_to_kdtree(laz_path, utm_epsg=UTM_EPSG):
-    las = laspy.read(laz_path)
-    transformer = Transformer.from_crs(f"EPSG:{utm_epsg}", "EPSG:4326", always_xy=True)
-    lons, lats = transformer.transform(las.x, las.y)
-    points_xy = np.vstack((lons, lats)).T
-    points_z = np.array(las.z)
-    tree = cKDTree(points_xy)
-    return tree, points_z
-
-
-def get_height_from_laser_kdtree(tree, z_values, lon, lat, k=5):
-    dists, idxs = tree.query([lon, lat], k=k)
-    z_nearest = z_values[idxs]
-    return float(np.mean(z_nearest))
-
-
-
 # ---------------- Main Mapper Class ----------------
 class DroneMapper:
     def __init__(self, drone_offset_north=DRONE_OFFSET_NORTH, drone_offset_east=DRONE_OFFSET_EAST,
-                 drone_offset_up=DRONE_OFFSET_UP, lidar_path=None, dem_path=None):
                  drone_offset_up=DRONE_OFFSET_UP, lidar_path=None, dem_path=None):
         self.DRONE_OFFSET_NORTH = drone_offset_north
         self.DRONE_OFFSET_EAST = drone_offset_east
@@ -274,16 +201,8 @@ class DroneMapper:
         self.points_z = None
         if lidar_path:
             self.tree, self.points_z = laz_to_kdtree(lidar_path, utm_epsg=UTM_EPSG)
-        self.dem_path = dem_path
-        self.tree = None
-        self.points_z = None
-        if lidar_path:
-            self.tree, self.points_z = laz_to_kdtree(lidar_path, utm_epsg=UTM_EPSG)
 
     def get_target_gps(self, u, v, gps, angles, image_size):
-        if gps is None or any(a is None for a in angles):
-            return None, None
-
         if gps is None or any(a is None for a in angles):
             return None, None
 
@@ -296,17 +215,7 @@ class DroneMapper:
 
 
 
-        yaw, pitch, roll = angles
-
-        print("Plane computation inputs:")
-        print(f"drone_alt={drone_alt}, rel_alt={rel_alt}, u={u}, v={v}, width={width}, height={height}")
-
-
-
         cam = Camera()
-        f_px = 13 * width / 10.88
-        cam.intrinsics(width, height, f_px, width / 2, height / 2)
-
         f_px = 13 * width / 10.88
         cam.intrinsics(width, height, f_px, width / 2, height / 2)
 
@@ -315,9 +224,7 @@ class DroneMapper:
             X=self.DRONE_OFFSET_EAST,
             Y=self.DRONE_OFFSET_NORTH,
             Z=(drone_alt + self.DRONE_OFFSET_UP),
-            Z=(drone_alt + self.DRONE_OFFSET_UP),
             roll=-roll,
-            pitch=-90 - pitch,
             pitch=-90 - pitch,
             yaw=-yaw - 90,
             order="ZYX"
@@ -340,7 +247,7 @@ class DroneMapper:
             ground_height = (drone_alt + self.DRONE_OFFSET_UP) - rel_alt
             plane = np.array([0, 0, 1, -ground_height])
             target_3D = cam.reprojectToPlane(pixel_to_camproject(u, v, width, height), plane)
-            lat, lon = enu_or_utm_to_gps(target_3D[0], target_3D[1], drone_lat, drone_lon)
+            lat, lon = enu_to_gps(target_3D[0], target_3D[1], drone_lat, drone_lon)
             return lat, lon
 
         # Ray-march for intersection with ground
@@ -351,7 +258,7 @@ class DroneMapper:
 
         for t in np.arange(0, max_distance, step):
             pos = drone_xyz + t * ray_dir_world
-            lat, lon = enu_or_utm_to_gps(pos[0], pos[1], drone_lat, drone_lon)
+            lat, lon = enu_to_gps(pos[0], pos[1], drone_lat, drone_lon)
             Z_surface = None
 
             if self.tree is not None:
@@ -374,7 +281,7 @@ class DroneMapper:
         print("Ground height:", ground_height)
 
         target_3D = cam.reprojectToPlane(pixel_to_camproject(u, v, width, height), plane)
-        lat, lon = enu_or_utm_to_gps(target_3D[0], target_3D[1], drone_lat, drone_lon)
+        lat, lon = enu_to_gps(target_3D[0], target_3D[1], drone_lat, drone_lon)
         return lat, lon
 
     def get_target_gps_array(self, data_array):
@@ -384,19 +291,15 @@ class DroneMapper:
             yaw, pitch, roll = data['yaw'], data['pitch'], data['roll']
             lat_lon = self.get_target_gps(u, v, gps=data['gps'], angles=(yaw, pitch, roll), image_size=data['image_size'])
             data['target_gps'] = lat_lon if lat_lon != (None, None) else None
-            lat_lon = self.get_target_gps(u, v, gps=data['gps'], angles=(yaw, pitch, roll), image_size=data['image_size'])
-            data['target_gps'] = lat_lon if lat_lon != (None, None) else None
         return data_array
 
     def process_images_gui(self, img_paths):
         data_array = extract_metadata_from_csv(img_paths)
         for entry in data_array:
             img = Image.open(entry['image_name'])
-            img = Image.open(entry['image_name'])
             img_array = np.array(img)
             if img_array.dtype == np.uint16:
                 img_array = (img_array / 256).astype(np.uint8)
-            if len(img_array.shape) == 2:
             if len(img_array.shape) == 2:
                 img_array = cv2.cvtColor(img_array, cv2.COLOR_GRAY2BGR)
             else:
@@ -420,17 +323,6 @@ class DroneMapper:
                              drone_gps=(entry['gps'][0] + self.DRONE_OFFSET_NORTH,
                                         entry['gps'][1] + self.DRONE_OFFSET_EAST))
             show_image_with_buttons(img_array, u, v, filename=entry['image_name'])
-            if entry.get('target_gps') is not None:
-                lat, lon = entry['target_gps']
-                plot_google_maps(target_gps=(lat, lon),
-                                 corner_gps=None,
-                                 drone_gps=(entry['gps'][0] + self.DRONE_OFFSET_NORTH,
-                                            entry['gps'][1] + self.DRONE_OFFSET_EAST))
-                plot_cad_map(target_gps=(lat, lon),
-                             corner_gps=None,
-                             drone_gps=(entry['gps'][0] + self.DRONE_OFFSET_NORTH,
-                                        entry['gps'][1] + self.DRONE_OFFSET_EAST))
-            show_image_with_buttons(img_array, u, v, filename=entry['image_name'])
 
 if __name__ == "__main__":
     root = tk.Tk()
@@ -443,7 +335,6 @@ if __name__ == "__main__":
     if not img_paths:
         print("No images selected. Exiting.")
         sys.exit(0)
-
 
     mapper = DroneMapper()
     mapper.process_images_gui(img_paths)
