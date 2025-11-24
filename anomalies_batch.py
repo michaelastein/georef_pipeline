@@ -197,7 +197,7 @@ def remove_matched_anomalies(matched_items, original_image_size=None):
     print(f" Remaining rows: {len(csv_anomaly_array)}")
 
 # ---------------- Main pipeline ----------------
-def main(image_data_list, build_corr_func, dem_path=None, lidar_path=None, original_image_size=None):
+def main(image_data_list, build_corr_func, dem_path=None, lidar_path=None, original_image_size=None, cad_path = None):
     global csv_anomaly_array
     try:
         Tk().withdraw()
@@ -226,8 +226,8 @@ def main(image_data_list, build_corr_func, dem_path=None, lidar_path=None, origi
             plot_cad.plot_cad_map(
                 target_gps=central,
                 points=points,
-                geojson_file="panels_with_row_plaintext_below.geojson",
-                map_file="batch_targets_map.html"
+                cad_path=cad_path,
+                output_file="batch_targets_map.html"
             )
 
     except Exception as e:

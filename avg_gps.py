@@ -257,7 +257,7 @@ def show_images_with_points(points_data, max_thumb_size=150, master=None):
 
 
 # ----------------- Main pipeline -----------------
-def main(data, max_drone_distance=40.0, max_target_distance=20.0, show_gui=False, plot_map=False, dem_path = None, lidar_path = None):
+def main(data, max_drone_distance=40.0, max_target_distance=20.0, show_gui=False, dem_path = None, lidar_path = None, cad_path= None):
     """
     Process image data: filter by distance, compute scores, average GPS, and optionally display.
 
@@ -309,8 +309,8 @@ def main(data, max_drone_distance=40.0, max_target_distance=20.0, show_gui=False
     print(f"Target GPS: {avg_lat:.6f}, {avg_lon:.6f}")
 
     # --- Optional CAD map plotting ---
-    if plot_map:
-        plot_cad_map(target_gps=(avg_lat, avg_lon), points=data)
+    if cad_path:
+        plot_cad_map(target_gps=(avg_lat, avg_lon), points=data, cad_path= cad_path)
 
     # --- Optional GUI thumbnail display ---
     if show_gui:

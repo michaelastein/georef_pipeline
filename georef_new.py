@@ -293,7 +293,7 @@ class DroneMapper:
             data['target_gps'] = lat_lon if lat_lon != (None, None) else None
         return data_array
 
-    def process_images_gui(self, img_paths):
+    def process_images_gui(self, img_paths, cad_path=None):
         data_array = extract_metadata_from_csv(img_paths)
         for entry in data_array:
             img = Image.open(entry['image_name'])
@@ -314,19 +314,36 @@ class DroneMapper:
         for entry in data_array:
             if entry.get('target_gps') is not None:
                 lat, lon = entry['target_gps']
+                drone_gps = (
+                    entry['gps'][0] + self.DRONE_OFFSET_NORTH,
+                    entry['gps'][1] + self.DRONE_OFFSET_EAST
+                )
                 plot_google_maps(target_gps=(lat, lon),
                                  corner_gps=None,
-                                 drone_gps=(entry['gps'][0] + self.DRONE_OFFSET_NORTH,
-                                            entry['gps'][1] + self.DRONE_OFFSET_EAST))
-                plot_cad_map(target_gps=(lat, lon),
-                             corner_gps=None,
-                             drone_gps=(entry['gps'][0] + self.DRONE_OFFSET_NORTH,
-                                        entry['gps'][1] + self.DRONE_OFFSET_EAST))
+                                 drone_gps=drone_gps)
+                if cad_path:
+                    plot_cad_map(target_gps=(lat, lon),
+                                 corner_gps=None,
+                                 drone_gps=drone_gps,
+                                 cad_path=cad_path)
             show_image_with_buttons(img_array, u, v, filename=entry['image_name'])
 
+
 if __name__ == "__main__":
+    import argparse
+
     root = tk.Tk()
     root.withdraw()
+
+    parser = argparse.ArgumentParser(description="Drone image mapping with optional CAD overlay.")
+    parser.add_argument(
+        "-c", "--cad",
+        type=str,
+        default=None,
+        help="Path to the CAD file of the solar plant (GeoJSON) for plotting"
+    )
+    args = parser.parse_args()
+    cad_path = args.cad
 
     img_paths = filedialog.askopenfilenames(
         title="Select images",
@@ -337,4 +354,4 @@ if __name__ == "__main__":
         sys.exit(0)
 
     mapper = DroneMapper()
-    mapper.process_images_gui(img_paths)
+    mapper.process_images_gui(img_paths, cad_path=cad_path)

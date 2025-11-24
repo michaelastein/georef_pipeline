@@ -10,7 +10,7 @@ import matplotlib.colors as mcolors
 CAD_MAP = "vollerup1.geojson"
 
 def plot_cad_map(target_gps, points=None, corner_gps=None, drone_gps=None,
-                 geojson_file=CAD_MAP, map_file="target_map_cad.html"):
+                 cad_path=CAD_MAP, output_file="target_map_cad.html"):
     """
     Plots the target, drone, corners, and multiple GPS points on a folium map using a GeoJSON CAD file.
     GPS points are color-coded by score.
@@ -26,7 +26,7 @@ def plot_cad_map(target_gps, points=None, corner_gps=None, drone_gps=None,
     lat, lon = target_gps
 
     # --- Load GeoJSON ---
-    with open(geojson_file, "r", encoding="utf-8") as f:
+    with open(cad_path, "r", encoding="utf-8") as f:
         geojson_data = json.load(f)
 
     # --- Check CRS and convert if needed ---
@@ -122,5 +122,5 @@ def plot_cad_map(target_gps, points=None, corner_gps=None, drone_gps=None,
         ).add_to(m)
 
     # --- Save and open map ---
-    m.save(map_file)
-    webbrowser.open("file://" + os.path.abspath(map_file))
+    m.save(output_file)
+    webbrowser.open("file://" + os.path.abspath(output_file))

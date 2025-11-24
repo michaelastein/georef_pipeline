@@ -171,7 +171,7 @@ def shortest_path(u, v, adj):
 
 # ---------------------- Main Function ----------------------
 
-def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None, lidar_path = None, image_size = None):
+def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None, lidar_path = None, image_size = None, cad_path = None):
     """
     Main pipeline:
     1. Load images and metadata (or load precomputed homographies)
@@ -520,7 +520,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None,
             idx, x, y,
             image_data_list=image_data_list
         )
-        avg_gps.main(correspondence_data, dem_path= dem_path, lidar_path = lidar_path)
+        avg_gps.main(correspondence_data, dem_path= dem_path, lidar_path = lidar_path, cad_path= None)
         if csv_path:
             import matching_anomalies
 
@@ -536,7 +536,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None,
 
     elif anomalies == "batch":
         # Launch batch anomaly processing
-        anomalies_batch.main(image_data_list, build_corr_func=build_correspondences_from_pixels, dem_path= dem_path, lidar_path = lidar_path,  original_image_size= original_image_size)
+        anomalies_batch.main(image_data_list, build_corr_func=build_correspondences_from_pixels, dem_path= dem_path, lidar_path = lidar_path,  original_image_size= original_image_size, cad_path= None)
 
     else:
         def click_callback(idx, x, y, gui):
@@ -546,7 +546,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None,
                 image_data_list=image_data_list
             )
 
-            avg_gps.main(data, dem_path= dem_path, lidar_path = lidar_path)
+            avg_gps.main(data, dem_path= dem_path, lidar_path = lidar_path, cad_path= None)
             return data  # returned data will be drawn as yellow markers
 
         gui = gui_canvas.CanvasGUI(image_data_list, orig_sizes, click_callback=click_callback)
@@ -600,10 +600,16 @@ if __name__ == "__main__":
     type=int,
     nargs=2,  # expect two integers: width height
     metavar=('WIDTH', 'HEIGHT'),
-    help="Original image size as WIDTH HEIGHT"
-)
+    help="Original image size as WIDTH HEIGHT")
 
-    
+
+    parser.add_argument(
+        "-c", "--cad",
+        type=str,
+        default=None,
+        help="Path to the CAD file of the solar plant (GeoJSON)"
+    )
+
     args = parser.parse_args()
 
     algorithm = args.algorithm.upper() if args.algorithm else None
@@ -612,6 +618,7 @@ if __name__ == "__main__":
     dem_path = args.dem
     lidar_path = args.lidar
     image_size = tuple(args.image_size) if args.image_size else None  # (width, height)
+    cad_path = args.cad
 
     main(
         algorithm,
@@ -619,5 +626,6 @@ if __name__ == "__main__":
         homographies_path=homographies_path,
         dem_path=dem_path,
         lidar_path=lidar_path,
-        image_size=image_size,  # pass it to your main function
+        image_size=image_size,
+        cad_path=cad_path,  
     )

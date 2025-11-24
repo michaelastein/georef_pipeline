@@ -83,6 +83,15 @@ Parameters
     Example: --image-size 4000 3000
 
 
+-c, --cad
+    Path to the CAD file (GeoJSON) of the solar plant. This is used for plotting or georeferencing anomalies relative to the plant layout.
+    Default: None
+    Example:  --cad solar_plant.geojson
+    If the file is not in the same folder as the feature_matching.py, use the full path, e.g. "C:\Users\Micha\internship\georef\solar_plant.geojson"
+
+
+
+
 
 Example Command
 
