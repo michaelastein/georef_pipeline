@@ -171,7 +171,7 @@ def shortest_path(u, v, adj):
 
 # ---------------------- Main Function ----------------------
 
-def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None, lidar_path = None):
+def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None, lidar_path = None, image_size = None):
     """
     Main pipeline:
     1. Load images and metadata (or load precomputed homographies)
@@ -190,6 +190,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None,
     progress_lock = threading.Lock()
     start_time = time.time()
     match_cache, H_dict, H_inliers = {}, {}, {}
+    original_image_size = image_size
 
     
 
@@ -486,7 +487,9 @@ def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None,
         # Add source image first
         entry = image_data_list[idx].copy()
         entry.update({"pixel_x": int(round(x)),
-                    "pixel_y": int(round(y))})
+                    "pixel_y": int(round(y)),
+                    "image_size": image_data_list[idx]["image_size"]
+                    })
         result.append(entry)
 
         # Add other correspondences
@@ -511,7 +514,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None,
     if anomalies == "single":
         # Launch anomaly GUI for single point selection
         idx, x, y, csv_path = launch_anomaly_gui(
-            image_data_list
+            image_data_list, original_image_size = original_image_size
         )
         correspondence_data = build_correspondences_from_pixels(
             idx, x, y,
@@ -521,7 +524,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None,
         if csv_path:
             import matching_anomalies
 
-            results = matching_anomalies.main(correspondence_data, csv_path)
+            results = matching_anomalies.main(correspondence_data, csv_path, original_image_size= original_image_size)
 
             # --- Print all image_name values ---
             if results:
@@ -533,7 +536,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None,
 
     elif anomalies == "batch":
         # Launch batch anomaly processing
-        anomalies_batch.main(image_data_list, build_corr_func=build_correspondences_from_pixels, dem_path= dem_path, lidar_path = lidar_path)
+        anomalies_batch.main(image_data_list, build_corr_func=build_correspondences_from_pixels, dem_path= dem_path, lidar_path = lidar_path,  original_image_size= original_image_size)
 
     else:
         def click_callback(idx, x, y, gui):
@@ -592,6 +595,15 @@ if __name__ == "__main__":
         help="Load a LiDAR LAZ file"
     )
 
+    parser.add_argument(
+    "-i", "--image-size",
+    type=int,
+    nargs=2,  # expect two integers: width height
+    metavar=('WIDTH', 'HEIGHT'),
+    help="Original image size as WIDTH HEIGHT"
+)
+
+    
     args = parser.parse_args()
 
     algorithm = args.algorithm.upper() if args.algorithm else None
@@ -599,6 +611,7 @@ if __name__ == "__main__":
     homographies_path = args.homographies
     dem_path = args.dem
     lidar_path = args.lidar
+    image_size = tuple(args.image_size) if args.image_size else None  # (width, height)
 
     main(
         algorithm,
@@ -606,5 +619,5 @@ if __name__ == "__main__":
         homographies_path=homographies_path,
         dem_path=dem_path,
         lidar_path=lidar_path,
+        image_size=image_size,  # pass it to your main function
     )
-

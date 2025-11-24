@@ -8,6 +8,18 @@ def safe_float(x):
     except Exception:
         return None
 
+def scale_coordinates(pixel_x, pixel_y, current_size, original_size):
+    """
+    Scale coordinates from current image size to original image size
+    """
+    if original_size is None or current_size is None:
+        return pixel_x, pixel_y
+    orig_w, orig_h = original_size
+    cur_w, cur_h = current_size
+    scale_x = orig_w / cur_w if cur_w != 0 else 1
+    scale_y = orig_h / cur_h if cur_h != 0 else 1
+    return pixel_x * scale_x, pixel_y * scale_y
+
 def find_exact_row_for_first_image(df, filename_col, filename, pixel_x, pixel_y):
     candidate_rows = df[df[filename_col].astype(str).str.strip() == filename]
     if candidate_rows.empty:
@@ -33,7 +45,7 @@ def compute_max_deviation_from_bbox(row, fraction=1/2.0):
     h = abs(ymax - ymin)
     return max(w, h) * fraction if max(w, h) > 0 else 10.0
 
-def get_matching_rows_for_image(df, image_name, max_dev, filename_col, correspondence_array):
+def get_matching_rows_for_image(df, image_name, max_dev, filename_col, correspondence_array, original_image_size):
     matches = []
     if filename_col not in df.columns:
         return matches
@@ -49,8 +61,13 @@ def get_matching_rows_for_image(df, image_name, max_dev, filename_col, correspon
         print(f"[DEBUG] No target entry found for {image_name}")
         return matches
 
-    target_x = target_entry["pixel_x"]
-    target_y = target_entry["pixel_y"]
+    # Scale coordinates to original image size
+    target_x, target_y = scale_coordinates(
+        target_entry["pixel_x"],
+        target_entry["pixel_y"],
+        target_entry.get("current_image_size"),
+        original_image_size
+    )
 
     for _, row in candidate_rows.iterrows():
         cx = safe_float(row.get("center_x"))
@@ -65,21 +82,20 @@ def get_matching_rows_for_image(df, image_name, max_dev, filename_col, correspon
                 "anomaly": row.get("anomaly")
             })
         
-
     return matches
 
 # ==== Main function ====
-def main(correspondence_array, csv_path):
+def main(correspondence_array, csv_path, original_image_size=None):
     """
     correspondence_array: list of dicts, each dict has keys:
         - image_name
         - pixel_x
         - pixel_y
+        - current_image_size (tuple: width, height)
     csv_path: path to CSV file with anomaly data
+    original_image_size: tuple (width, height) of original images
     Returns: list of dicts with image_name, pixel_x, pixel_y, anomaly
     """
-
-
 
     if not correspondence_array:
         return []
@@ -89,8 +105,14 @@ def main(correspondence_array, csv_path):
     df = pd.read_csv(csv_path)
     first_entry = correspondence_array[0]
     first_filename = os.path.basename(first_entry["image_name"])
-    first_pixel_x = float(first_entry["pixel_x"])
-    first_pixel_y = float(first_entry["pixel_y"])
+
+    # Scale first entry to original image size
+    first_pixel_x, first_pixel_y = scale_coordinates(
+        first_entry["pixel_x"],
+        first_entry["pixel_y"],
+        first_entry.get("current_image_size"),
+        original_image_size
+    )
 
     # Determine filename column
     ext = os.path.splitext(first_filename)[1].lower()
@@ -105,9 +127,8 @@ def main(correspondence_array, csv_path):
 
     for entry in correspondence_array[1:]:
         bname = os.path.basename(entry["image_name"])
-        matches = get_matching_rows_for_image(df, bname, max_dev, filename_col, correspondence_array)
+        matches = get_matching_rows_for_image(df, bname, max_dev, filename_col, correspondence_array, original_image_size)
         if matches:
             results.extend(matches)
-
 
     return results
