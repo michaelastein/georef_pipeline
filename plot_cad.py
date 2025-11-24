@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 
-CAD_MAP = "panels_with_row_plaintext_below.geojson"
+CAD_MAP = "vollerup1.geojson"
 
 def plot_cad_map(target_gps, points=None, corner_gps=None, drone_gps=None,
                  geojson_file=CAD_MAP, map_file="target_map_cad.html"):
