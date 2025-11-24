@@ -1,14 +1,14 @@
 from tkinter import Tk, Toplevel, Label, Entry, Button, StringVar, END
 from tkinter.filedialog import askopenfilename
 from PIL import Image, ImageTk, ImageDraw
-from matching_anomalies import scale_coordinates  # centralized scaling function
+from anomaly_matching import scale_coordinates  # centralized scaling function
 
 def launch_anomaly_gui(image_data_list, original_image_size=None):
     """
     GUI to select an image from a batch, pick a pixel, optionally select a CSV file.
     Returns:
         idx: index of selected image in image_data_list
-        x, y: pixel coordinates scaled to original image size (if clicked) or manual input
+        x, y: pixel coordinates relative to displayed image size
         csv_path: path to CSV file (or None if not selected)
     """
     root = Tk()
@@ -83,14 +83,26 @@ def launch_anomaly_gui(image_data_list, original_image_size=None):
     def on_click(event):
         if img is None:
             return
+        # Coordinates relative to displayed image
         px = int(event.x * img.width / lbl_img.winfo_width())
         py = int(event.y * img.height / lbl_img.winfo_height())
+
+        # Coordinates for display (scaled to original image size)
+        if original_image_size:
+            current_size = selected_img_entry.get("image_size", (img.width, img.height))
+            display_x, display_y = scale_coordinates(px, py, current_size, original_image_size)
+        else:
+            display_x, display_y = px, py
+
         entry_x.delete(0, END)
-        entry_x.insert(0, str(px))
+        entry_x.insert(0, str(int(display_x)))
         entry_y.delete(0, END)
-        entry_y.insert(0, str(py))
+        entry_y.insert(0, str(int(display_y)))
+
         draw_marker(px, py)
-        selected_img_entry["clicked"] = True  # mark that coordinates come from a click
+        selected_img_entry["clicked"] = True
+        selected_img_entry["last_click_px"] = px
+        selected_img_entry["last_click_py"] = py
 
     lbl_img.bind("<Button-1>", on_click)
 
@@ -107,18 +119,22 @@ def launch_anomaly_gui(image_data_list, original_image_size=None):
             error_var.set("No image selected.")
             return
         try:
-            px = float(entry_x.get())
-            py = float(entry_y.get())
+            if selected_img_entry.get("clicked"):
+                # Return coordinates relative to displayed image
+                x = selected_img_entry["last_click_px"]
+                y = selected_img_entry["last_click_py"]
+            else:
+                # Manual input: convert from original size back to displayed size
+                px = float(entry_x.get())
+                py = float(entry_y.get())
+                if original_image_size:
+                    current_size = selected_img_entry.get("image_size", (img.width, img.height))
+                    x, y = scale_coordinates(px, py, original_image_size, current_size)
+                else:
+                    x, y = px, py
         except ValueError:
             error_var.set("Invalid coordinates.")
             return
-
-        # Scale only if user clicked; manual input assumed original size
-        current_size = selected_img_entry.get("image_size", (img.width, img.height))
-        if selected_img_entry.get("clicked") and original_image_size:
-            x, y = scale_coordinates(px, py, current_size, original_image_size)
-        else:
-            x, y = px, py
 
         root.destroy()
 

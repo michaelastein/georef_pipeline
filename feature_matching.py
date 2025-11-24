@@ -7,14 +7,14 @@ import time
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import anomalies_batch
+import batch_processing_anomalies
 import gui_canvas
 from gui_anomalies import launch_anomaly_gui
 import avg_gps
 from tkinter.filedialog import askopenfilename, askopenfilenames
 from collections import deque
 import pickle
-import georef_new
+import georeferncing
 
 import json
 # ---------------------- Utility Functions ----------------------
@@ -113,7 +113,7 @@ def extract_metadata_from_csv():
         return []
 
     # Delegate all metadata extraction to georef_new
-    return georef_new.extract_metadata_from_csv(img_paths)
+    return georeferncing.extract_metadata_from_csv(img_paths)
 
 
 
@@ -428,7 +428,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None,
 
     def build_correspondences_from_pixels(idx, x, y, image_data_list, pixel_tol=1e-3):
         """
-        Given a pixel location in one image (idx), compute its corresponding pixel locations
+        Given a pixel location in one image (idx) (using current image size), compute its corresponding pixel locations
         in all connected images using the homography graph.
         Duplicate correspondences are removed by rounding pixels to avoid near-duplicate entries.
         The source image is always the first element in the returned list.
@@ -523,9 +523,9 @@ def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None,
         )
         avg_gps.main(correspondence_data, dem_path= dem_path, lidar_path = lidar_path, cad_path= cad_path)
         if csv_path:
-            import matching_anomalies
+            import anomaly_matching
 
-            results = matching_anomalies.main(correspondence_data, csv_path, original_image_size= original_image_size)
+            results = anomaly_matching.main(correspondence_data, csv_path, original_image_size= original_image_size)
 
             # --- Print all image_name values ---
             if results:
@@ -537,7 +537,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None,
 
     elif anomalies == "batch":
         # Launch batch anomaly processing
-        anomalies_batch.main(image_data_list, build_corr_func=build_correspondences_from_pixels, dem_path= dem_path, lidar_path = lidar_path,  original_image_size= original_image_size, cad_path= cad_path)
+        batch_processing_anomalies.main(image_data_list, build_corr_func=build_correspondences_from_pixels, dem_path= dem_path, lidar_path = lidar_path,  original_image_size= original_image_size, cad_path= cad_path)
 
     else:
         def click_callback(idx, x, y, gui):
@@ -620,6 +620,8 @@ if __name__ == "__main__":
     lidar_path = args.lidar
     image_size = tuple(args.image_size) if args.image_size else None  # (width, height)
     cad_path = args.cad
+
+    print("test")
 
     main(
         algorithm,

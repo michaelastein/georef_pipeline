@@ -10,7 +10,7 @@ from pyproj import Transformer, CRS
 import csv
 import rasterio
 from pathlib import Path
-from plot_maps import plot_google_maps  # Function to plot points on Google Maps
+from plot_google_maps import plot_google_maps  # Function to plot points on Google Maps
 from plot_cad import plot_cad_map        # Optional CAD plotting function
 import laspy
 from scipy.spatial import cKDTree
@@ -20,6 +20,9 @@ DRONE_OFFSET_NORTH = 0.0
 DRONE_OFFSET_EAST  = 0.0
 DRONE_OFFSET_UP    = 0.0
 UTM_EPSG = 25832  # UTM32 / ETRS89
+
+FOCAL_LENGTH_MM = 13.0   
+SENSOR_WIDTH_MM = 10.88
 
 # ---------------- Utility Functions ----------------
 
@@ -192,13 +195,16 @@ def get_height_from_laser_kdtree(tree, z_values, lon, lat, k=5):
 # ---------------- Main Mapper Class ----------------
 class DroneMapper:
     def __init__(self, drone_offset_north=DRONE_OFFSET_NORTH, drone_offset_east=DRONE_OFFSET_EAST,
-                 drone_offset_up=DRONE_OFFSET_UP, lidar_path=None, dem_path=None):
+                 drone_offset_up=DRONE_OFFSET_UP, lidar_path=None, dem_path=None, focal_length_mm=FOCAL_LENGTH_MM,   
+                 sensor_width_mm=SENSOR_WIDTH_MM):
         self.DRONE_OFFSET_NORTH = drone_offset_north
         self.DRONE_OFFSET_EAST = drone_offset_east
         self.DRONE_OFFSET_UP = drone_offset_up
         self.dem_path = dem_path
         self.tree = None
         self.points_z = None
+        self.focal_length_mm = focal_length_mm
+        self.sensor_width_mm = sensor_width_mm
         if lidar_path:
             self.tree, self.points_z = laz_to_kdtree(lidar_path, utm_epsg=UTM_EPSG)
 
@@ -210,13 +216,13 @@ class DroneMapper:
         width, height = image_size
         yaw, pitch, roll = angles
 
-        print("Plane computation inputs:")
-        print(f"drone_alt={drone_alt}, rel_alt={rel_alt}, u={u}, v={v}, width={width}, height={height}")
+        #print("Plane computation inputs:")
+        #print(f"drone_alt={drone_alt}, rel_alt={rel_alt}, u={u}, v={v}, width={width}, height={height}")
 
 
 
         cam = Camera()
-        f_px = 13 * width / 10.88
+        f_px = self.focal_length_mm * width / self.sensor_width_mm
         cam.intrinsics(width, height, f_px, width / 2, height / 2)
 
         ext = Extrinsics()

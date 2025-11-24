@@ -1,5 +1,5 @@
 import numpy as np
-import georef_new
+import georeferncing
 from plot_cad import plot_cad_map  # Updated CAD map function
 import tkinter as tk
 from PIL import Image, ImageTk, ImageDraw
@@ -282,7 +282,7 @@ def main(data, max_drone_distance=40.0, max_target_distance=20.0, show_gui=False
     data = filter_points_by_distance(data, max_distance=max_drone_distance, gps_type='drone')
 
     # --- Initialize DroneMapper and fill target_gps ---
-    mapper = georef_new.DroneMapper(lidar_path = lidar_path, dem_path= dem_path)
+    mapper = georeferncing.DroneMapper(lidar_path = lidar_path, dem_path= dem_path)
     data = mapper.get_target_gps_array(data)
 
     # --- Filter items with valid target GPS ---

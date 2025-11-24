@@ -12,17 +12,20 @@ Start the programm from the terminal with
 
 
 For only georeferencing:
-`python georef_new.py`
+`python georeferncing.py`
 
 
 
 
-Important!
+**Important!**
 It really speeds up to downsize the images, for example a width of 500px is more than enough.
-But then you need to give the original image size in the terminal, otherwise the anomaly matching won't work.
+But then you need to give the original image size in the terminal, otherwise the anomaly matching won't work (as the anomaly algorithm was run on the original size -> the logs contain pixels corresponding to the original sizes).
 `python feature_matching.py --anomalies batch --image-size 1200 700`
 
 If you have the image log .csv file in the same folder as the images, it will be automatically chosen (if it is the only .csv file in the folder --> keep the anomaly csv file in a different folder)
+
+
+The Georeferncing uses camera parameters of the WIRIS IR Camera. If you want to use images from another camera, please change focal_length_mm and sensor_width in georeferencing.py
 
 
 

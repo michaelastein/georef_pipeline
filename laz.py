@@ -1,7 +1,7 @@
 import laspy
 import numpy as np
 from pyproj import Transformer
-from plot_maps import plot_google_maps
+from plot_google_maps import plot_google_maps
 
 # Load LAZ
 laz_path = "vollerup.laz"
