@@ -7,33 +7,61 @@ import cv2
 import os
 
 
+
+
 # ----------------- Haversine distance -----------------
 def haversine(lat1, lon1, lat2, lon2):
+    """
+    Calculate the great-circle distance between two points on the Earth.
+    
+    Parameters:
+        lat1, lon1: Latitude and longitude of the first point in degrees
+        lat2, lon2: Latitude and longitude of the second point in degrees
+        
+    Returns:
+        Distance between the points in meters
+    """
     R = 6371000  # Earth radius in meters
-    phi1, phi2 = np.radians(lat1), np.radians(lat2)
-    dphi = np.radians(lat2 - lat1)
-    dlambda = np.radians(lon2 - lon1)
+    phi1, phi2 = np.radians(lat1), np.radians(lat2)  # Convert latitudes to radians
+    dphi = np.radians(lat2 - lat1)  # Latitude difference in radians
+    dlambda = np.radians(lon2 - lon1)  # Longitude difference in radians
+    # Haversine formula
     a = np.sin(dphi / 2)**2 + np.cos(phi1) * np.cos(phi2) * np.sin(dlambda / 2)**2
-    return 2 * R * np.arcsin(np.sqrt(a))
+    return 2 * R * np.arcsin(np.sqrt(a))  # Distance in meters
 
 # ----------------- Score computation -----------------
 def compute_image_scores(data_array):
+    """
+    Compute a combined score for each image based on nadir alignment and 
+    how close the pixel of interest is to the image center.
+    
+    Parameters:
+        data_array: List of dictionaries containing image info and metadata.
+                    Expected keys: 'image_size', 'pitch', 'roll', 'pixel_x', 'pixel_y'
+    
+    Modifies:
+        Each dictionary in data_array will have a new key 'score' with the computed value.
+    """
     for item in data_array:
-        width, height = item.get('image_size', (1, 1))
-        cx, cy = width / 2, height / 2
+        width, height = item.get('image_size', (1, 1))  # Default size if missing
+        cx, cy = width / 2, height / 2  # Image center coordinates
 
+        # Compute nadir score based on pitch and roll (0 degrees is perfectly nadir)
         pitch = item.get('pitch', 0.0) or 0.0
         roll = item.get('roll', 0.0) or 0.0
-        nadir_score = np.exp(-(pitch**2 + roll**2) / (2 * 30**2))
+        nadir_score = np.exp(-(pitch**2 + roll**2) / (2 * 30**2))  # Gaussian decay
 
+        # Compute center score based on distance of pixel of interest from image center
         u, v = item.get('pixel_x', cx), item.get('pixel_y', cy)
-        du = (u - cx) / cx
-        dv = (v - cy) / cy
-        dist = np.sqrt(du**2 + dv**2) / np.sqrt(2)
-        center_score = 1 - dist
+        du = (u - cx) / cx  # Normalized horizontal distance
+        dv = (v - cy) / cy  # Normalized vertical distance
+        dist = np.sqrt(du**2 + dv**2) / np.sqrt(2)  # Max distance normalized to 1
+        center_score = 1 - dist  # Higher score near center
 
+        # Combine nadir and center scores
         combined_score = (nadir_score + center_score) / 2
-        item['score'] = float(np.clip(combined_score, 0, 1))
+        item['score'] = float(np.clip(combined_score, 0, 1))  # Ensure score in [0,1]
+
 
 # ----------------- Flexible GPS-based filtering -----------------
 def filter_points_by_distance(data_array, max_distance=50.0, gps_type='drone'):

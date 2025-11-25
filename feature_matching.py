@@ -19,9 +19,19 @@ import georeferncing
 import json
 # ---------------------- Utility Functions ----------------------
 
+
 def haversine(lat1, lon1, lat2, lon2):
     """
-    Compute the Haversine distance between two GPS coordinates in meters.
+    Compute the Haversine distance between two GPS coordinates.
+
+    Parameters:
+        lat1 (float): Latitude of the first point in degrees.
+        lon1 (float): Longitude of the first point in degrees.
+        lat2 (float): Latitude of the second point in degrees.
+        lon2 (float): Longitude of the second point in degrees.
+
+    Returns:
+        float: Distance between the two points in meters.
     """
     R = 6371000  # Earth radius in meters
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
@@ -33,8 +43,13 @@ def haversine(lat1, lon1, lat2, lon2):
 
 def preprocess_for_features(img):
     """
-    Convert an image to grayscale and apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
-    to enhance features for keypoint detection.
+    Convert an image to grayscale and enhance features using CLAHE.
+
+    Parameters:
+        img (numpy.ndarray): Input image in BGR color format.
+
+    Returns:
+        numpy.ndarray: Grayscale image with enhanced contrast suitable for keypoint detection.
     """
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
@@ -43,7 +58,20 @@ def preprocess_for_features(img):
 
 def print_progress(current, total, stage_name, start_time=None, last_print=[-1], lock=None, bar_length=30, update_every_percent=1):
     """
-    Print progress updates with a progress bar and ETA every `update_every_percent` percent.
+    Print a textual progress bar with percentage and ETA.
+
+    Parameters:
+        current (int): Current progress count.
+        total (int): Total count for completion.
+        stage_name (str): Name of the current processing stage.
+        start_time (float, optional): Start time in seconds (from time.time()) to compute ETA.
+        last_print (list, optional): Mutable list used internally to track last printed percentage.
+        lock (threading.Lock, optional): Optional lock for thread-safe printing.
+        bar_length (int, optional): Length of the progress bar in characters.
+        update_every_percent (int, optional): Minimum percent increment before updating the bar.
+
+    Returns:
+        None
     """
     percent = int((current / total) * 100) if total > 0 else 100
     if percent // update_every_percent != last_print[0] or current == total:
@@ -68,11 +96,17 @@ def print_progress(current, total, stage_name, start_time=None, last_print=[-1],
         last_print[0] = percent // update_every_percent
 
 
-
-
 def save_homographies(H_dict, image_data_list, filename="homographies.pkl"):
     """
-    Save computed homographies and associated image metadata to a file using pickle.
+    Save computed homographies and associated image metadata to a pickle file.
+
+    Parameters:
+        H_dict (dict): Dictionary of homography matrices keyed by image pairs.
+        image_data_list (list): List of dictionaries containing image metadata.
+        filename (str, optional): Path to the file to save data. Defaults to 'homographies.pkl'.
+
+    Returns:
+        None
     """
     data_to_save = {
         "H_dict": H_dict,
@@ -86,22 +120,39 @@ def save_homographies(H_dict, image_data_list, filename="homographies.pkl"):
 def load_homographies(filename="homographies.pkl"):
     """
     Load previously saved homographies and image metadata from a pickle file.
+
+    Parameters:
+        filename (str, optional): Path to the pickle file. Defaults to 'homographies.pkl'.
+
+    Returns:
+        tuple:
+            - H_dict (dict): Dictionary of loaded homography matrices.
+            - image_data_list (list): List of dictionaries with image metadata.
     """
     with open(filename, "rb") as f:
         data = pickle.load(f)
     print(f"Loaded homographies and image data from {filename}")
-
-
-
     return data["H_dict"], data["image_data_list"]
+
+
 
 
 # ---------------------- Metadata / CSV ----------------------
 
 def extract_metadata_from_csv():
     """
-    Prompt user to select images, then extract metadata using georef_new.extract_metadata_from_csv.
-    Returns a list of image metadata dictionaries.
+    Prompt the user to select image files and extract metadata for each image.
+
+    This function uses a file dialog to let the user select multiple images, 
+    then delegates metadata extraction to `georeferncing.extract_metadata_from_csv`.
+
+    Parameters:
+        None
+
+    Returns:
+        list of dict: Each dictionary contains metadata for one image, 
+                      e.g., GPS coordinates, image size, etc. Returns an empty
+                      list if no images were selected.
     """
     # Prompt user to select image files
     img_paths = askopenfilenames(
@@ -112,19 +163,23 @@ def extract_metadata_from_csv():
         print("No images selected.")
         return []
 
-    # Delegate all metadata extraction to georef_new
+    # Delegate all metadata extraction to georeferncing module
     return georeferncing.extract_metadata_from_csv(img_paths)
-
-
-
-
 
 
 # ---------------------- Graph helpers ----------------------
 
 def node_connected_component(start, adj):
     """
-    Return all nodes connected to 'start' in the homography graph.
+    Find all nodes connected to a starting node in an adjacency graph.
+
+    Parameters:
+        start (hashable): The node from which to start the traversal.
+        adj (dict): Adjacency dictionary representing the graph. Keys are nodes,
+                    values are iterables of neighboring nodes.
+
+    Returns:
+        set: All nodes reachable from `start`, including `start` itself.
     """
     if start not in adj:
         return {start}
@@ -141,15 +196,26 @@ def node_connected_component(start, adj):
 
 def shortest_path(u, v, adj):
     """
-    Compute shortest path from node u to v using BFS.
-    Returns a list of nodes along the path.
+    Compute the shortest path between two nodes in an unweighted graph using BFS.
+
+    Parameters:
+        u (hashable): Starting node.
+        v (hashable): Target node.
+        adj (dict): Adjacency dictionary representing the graph. Keys are nodes,
+                    values are iterables of neighboring nodes.
+
+    Returns:
+        list or None: List of nodes along the shortest path from `u` to `v`, 
+                      including both endpoints. Returns None if no path exists.
     """
     if u == v:
         return [u]
     if u not in adj:
         return None
+
     q = deque([u])
     parent = {u: None}
+
     while q:
         cur = q.popleft()
         for nb in adj.get(cur, ()):
@@ -168,18 +234,37 @@ def shortest_path(u, v, adj):
     return None
 
 
-
 # ---------------------- Main Function ----------------------
 
 def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None, lidar_path = None, image_size = None, cad_path = None):
     """
-    Main pipeline:
-    1. Load images and metadata (or load precomputed homographies)
-    2. Detect and compute features
-    3. Compute neighbors based on GPS threshold
-    4. Match features between neighbors and compute homographies
-    5. Build a graph of homographies
-    6. Launch GUI or anomalies processing
+    Main image processing and homography pipeline.
+
+    This function orchestrates the following steps:
+        1. Load images and metadata (or load precomputed homographies from a file)
+        2. Detect and compute image features (keypoints and descriptors)
+        3. Identify neighbor image pairs based on GPS proximity
+        4. Match features between neighbor images and compute homographies
+        5. Build a graph of homographies connecting images
+        6. Optionally save homographies, display GUI, or process anomalies
+
+    Parameters:
+        algorithm (str, optional): Feature detection algorithm to use (SIFT, ORB, AKAZE, BRISK, KAZE).
+                                   If None, defaults to BRISK for TIFF images, otherwise SIFT.
+        anomalies (Any, optional): Placeholder for anomaly detection input (not fully implemented here).
+        homographies_path (str, optional): Path to a pickle file containing precomputed homographies.
+        dem_path (str, optional): Path to a digital elevation model (DEM) file, if needed for georeferencing.
+        lidar_path (str, optional): Path to a LiDAR point cloud file for georeferencing.
+        image_size (tuple, optional): Original image size (width, height) for scaling purposes.
+        cad_path (str, optional): Path to CAD map file for optional visualization of points.
+
+
+    Notes:
+        - If homographies_path is provided, images and homographies are loaded from file.
+        - Features are computed in parallel using ThreadPoolExecutor for speed.
+        - Matches are filtered using Lowe's ratio test and geometric consistency.
+        - Homographies are computed with RANSAC and a minimum inlier threshold.
+        - Saves computed homographies to 'homographies.pkl' by default.
     """
     threshold_meters = 40.0
     ratio_test = 0.7
@@ -426,7 +511,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None,
 
     # ---------------------- Correspondences ----------------------
 
-    def build_correspondences_from_pixels(idx, x, y, image_data_list, pixel_tol=1e-3):
+    def build_correspondences_from_pixels(idx, x, y, image_data_list):
         """
         Given a pixel location in one image (idx) (using current image size), compute its corresponding pixel locations
         in all connected images using the homography graph.
@@ -502,11 +587,6 @@ def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None,
             result.append(entry)
 
         return result
-
-
-
-
-            
 
 
 
