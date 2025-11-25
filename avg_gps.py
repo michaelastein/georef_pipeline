@@ -306,7 +306,7 @@ def main(data, max_drone_distance=40.0, max_target_distance=20.0, show_gui=False
         print("No valid GPS points to compute cluster average.")
         return data, None, None
 
-    print(f"Target GPS: {avg_lat:.6f}, {avg_lon:.6f}")
+    #print(f"Target GPS: {avg_lat:.6f}, {avg_lon:.6f}")
 
     # --- Optional CAD map plotting ---
     if cad_path:

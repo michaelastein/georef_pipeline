@@ -537,7 +537,7 @@ def main(algorithm=None, anomalies=None, homographies_path=None, dem_path= None,
 
     elif anomalies == "batch":
         # Launch batch anomaly processing
-        batch_processing_anomalies.main(image_data_list, build_corr_func=build_correspondences_from_pixels, dem_path= dem_path, lidar_path = lidar_path,  original_image_size= original_image_size, cad_path= cad_path)
+        batch_processing_anomalies.main(image_data_list, build_corr_func=build_correspondences_from_pixels, print_progress_func = print_progress, dem_path= dem_path, lidar_path = lidar_path,  original_image_size= original_image_size, cad_path= cad_path)
 
     else:
         def click_callback(idx, x, y, gui):
@@ -621,7 +621,6 @@ if __name__ == "__main__":
     image_size = tuple(args.image_size) if args.image_size else None  # (width, height)
     cad_path = args.cad
 
-    print("test")
 
     main(
         algorithm,

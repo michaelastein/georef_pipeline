@@ -73,8 +73,16 @@ def plot_cad_map(target_gps, points=None, corner_gps=None, drone_gps=None,
     # --- Plot GPS points with color based on score ---
     if points:
         scores = [pt.get('score', 1) for pt in points]
-        norm = mcolors.Normalize(vmin=min(scores), vmax=max(scores))
-        cmap = cm.get_cmap('YlOrRd')
+
+        if all(s == scores[0] for s in scores):
+            # All scores are the same → use red for all
+            def get_color(score):
+                return "#FF0000"  # red
+        else:
+            norm = mcolors.Normalize(vmin=min(scores), vmax=max(scores))
+            cmap = cm.get_cmap('YlOrRd')
+            def get_color(score):
+                return mcolors.to_hex(cmap(norm(score)))
 
         for pt in points:
             lat_pt, lon_pt = pt.get('target_gps', (None, None))
@@ -82,7 +90,7 @@ def plot_cad_map(target_gps, points=None, corner_gps=None, drone_gps=None,
                 continue  # skip points without GPS
 
             score = pt.get('score', 0.5)
-            color = mcolors.to_hex(cmap(norm(score)))
+            color = get_color(score)
 
             # --- Use folium.Circle with 0.4m radius (40cm) ---
             folium.Circle(
@@ -94,6 +102,7 @@ def plot_cad_map(target_gps, points=None, corner_gps=None, drone_gps=None,
                 fill_opacity=0.7,
                 popup=f"Score: {score:.2f}\nLat: {lat_pt:.7f}\nLon: {lon_pt:.7f}"
             ).add_to(m)
+
 
     # --- Marker for target pixel ---
     folium.Marker(

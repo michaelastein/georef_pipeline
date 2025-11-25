@@ -27,6 +27,7 @@ If you have the image log .csv file in the same folder as the images, it will be
 
 The Georeferncing uses camera parameters of the WIRIS IR Camera. If you want to use images from another camera, please change focal_length_mm and sensor_width in georeferencing.py
 
+The calculations (how the images relate to each other & feature matching) will be automatically saved to homographies.pkl, so you can reload them later with --homographies homographies.pkl.
 
 
 
