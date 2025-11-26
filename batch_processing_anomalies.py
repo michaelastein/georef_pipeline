@@ -6,7 +6,7 @@ import numpy as np
 from tkinter import Tk
 from tkinter.filedialog import askopenfilename
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 
 import avg_gps
@@ -321,13 +321,18 @@ def main(image_data_list, build_corr_func, print_progress_func, original_image_s
 
         # --- Step 3: Define worker function for parallel processing ---
         def worker(row):
-            """Process a single anomaly row."""
             process_next_anomaly(
-                row, image_data_list, build_corr_func, csv_path,
+                row,
+                image_data_list,
+                build_corr_func,
+                csv_path,
+                image_map,
                 original_image_size=original_image_size,
-                dem_path=dem_path, lidar_path=lidar_path
+                dem_path=dem_path,
+                lidar_path=lidar_path
             )
-            return 1  # return 1 to increment progress counter
+            return 1
+            # return 1 to increment progress counter
 
         # --- Step 4: Run parallel processing with progress updates ---
         completed = 0
