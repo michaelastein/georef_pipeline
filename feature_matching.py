@@ -1,7 +1,6 @@
 import cv2
 import numpy as np
-import csv
-from pathlib import Path
+
 import math
 import time
 import os
@@ -11,12 +10,12 @@ import batch_processing_anomalies
 import gui_canvas
 from gui_anomalies import launch_anomaly_gui
 import avg_gps
-from tkinter.filedialog import askopenfilename, askopenfilenames
+from tkinter.filedialog import  askopenfilenames
 from collections import deque
 import pickle
 import georeferncing
 
-import json
+
 # ---------------------- Utility Functions ----------------------
 
 

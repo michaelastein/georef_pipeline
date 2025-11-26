@@ -110,5 +110,16 @@ Notes
 
 - GUI pixel selections are automatically scaled to the original image size if specified.
 
-- Manual coordinate input in the GUI should be in the original image size.
+- Manual pixel coordinate input in the GUI should be in the original image size (as in the anomaly logs).
+
+- Possible further improvements to implement:
+
+    - flying the drone with LIDAR to get a more accurate heigth above ground. I think this will have a great impact on acuracy of the georeferencing
+    - find the right image size that balances computation speed and quality of results. Reducing the input image size has a great impact on computation duration of the         homography. Don't forget to add the original image size as a parameter in the terminal if you sized the images down
+    - Use the GPU for some of the calculations to speed things up
+    - further parallelize the anomaly and anomaly batch processing, as it uses only a small fraction of available CPU at the moment 
+    - Take the height of the solar panels above ground into account, maybe with LIDAR scans from the drone
+    - take into account the physical distance and possible rotation between camera, imu, GPS and LIDAR to make it more accurate
+    - put more effort into finding out the best feature matching algorithm, I only decided on some examplary results I've seen
+
 

@@ -3,7 +3,6 @@ import webbrowser
 import os
 import json
 from pyproj import CRS, Transformer
-import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 
