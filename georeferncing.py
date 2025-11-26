@@ -1,5 +1,5 @@
 import numpy as np
-from camproject import Camera, Extrinsics  # Custom module for camera projection
+from camproject import Camera, Extrinsics  
 import cv2
 import tkinter as tk
 from tkinter import filedialog
@@ -10,8 +10,8 @@ from pyproj import Transformer, CRS
 import csv
 import rasterio
 from pathlib import Path
-from plot_google_maps import plot_google_maps  # Function to plot points on Google Maps
-from plot_cad import plot_cad_map        # Optional CAD plotting function
+from plot_google_maps import plot_google_maps 
+from plot_cad import plot_cad_map       
 import laspy
 from scipy.spatial import cKDTree
 
