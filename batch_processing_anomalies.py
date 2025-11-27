@@ -16,6 +16,7 @@ import plot_cad
 # ---------------- Globals ----------------
 output_array = []
 csv_anomaly_array = []
+anomaly_id_counter = 1
 
 # ---------------- Helpers ----------------
 def safe_float(x):
@@ -79,14 +80,7 @@ def read_csv(csv_path: str, image_data_list: list) -> list:
 
 def write_csv(csv_path: str, rows: list) -> str:
     """
-    Write georeferenced anomaly rows to a new CSV file.
-
-    Args:
-        csv_path: Original CSV path (used to derive output filename)
-        rows: List of dicts with anomaly information
-
-    Returns:
-        Path to the saved CSV, or None if no rows.
+    Write georeferenced anomaly rows to a new CSV file with unique IDs.
     """
     if not rows:
         print("[DEBUG] No rows to save.")
@@ -94,7 +88,7 @@ def write_csv(csv_path: str, rows: list) -> str:
 
     base, ext = os.path.splitext(csv_path)
     new_csv_path = f"{base}_georeferenced{ext}"
-    fieldnames = ["anomaly_type", "latitude", "longitude", "example_image", "example_pixel_x", "example_pixel_y"]
+    fieldnames = ["id", "anomaly_type", "latitude", "longitude", "example_image", "example_pixel_x", "example_pixel_y"]
 
     with open(new_csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -106,18 +100,15 @@ def write_csv(csv_path: str, rows: list) -> str:
     return new_csv_path
 
 
+
+
 def add_anomaly_to_csv(output_array: list, anomaly_type: str, latitude: float, longitude: float, example_image=None, example_pixel_x=None, example_pixel_y=None):
     """
-    Add a single anomaly record to the output array (to later write CSV).
-
-    Args:
-        output_array: list to append to
-        anomaly_type: string describing the anomaly
-        latitude, longitude: georeferenced coordinates
-        example_image: optional image filename
-        example_pixel_x, example_pixel_y: optional pixel location in image
+    Add a single anomaly record to the output array (to later write CSV), now with unique ID.
     """
+    global anomaly_id_counter
     output_array.append({
+        "id": anomaly_id_counter,
         "anomaly_type": anomaly_type,
         "latitude": latitude,
         "longitude": longitude,
@@ -125,6 +116,8 @@ def add_anomaly_to_csv(output_array: list, anomaly_type: str, latitude: float, l
         "example_pixel_x": example_pixel_x,
         "example_pixel_y": example_pixel_y
     })
+    anomaly_id_counter += 1
+
 
 
 # ---------------- Remove matched anomalies ----------------
@@ -355,12 +348,20 @@ def main(image_data_list, build_corr_func, print_progress_func, original_image_s
         # --- Step 5: Write georeferenced results to CSV ---
         georef_csv_path = write_csv(csv_path, output_array)
 
-        # --- Step 6: Optionally, plot anomalies on CAD map ---
-        points = [{"target_gps": (r["latitude"], r["longitude"]), "score": 1.0} 
-                  for r in output_array if r["latitude"] is not None]
+       # --- Step 6: plot anomalies on CAD map ---
+        points = [
+            {
+                "id": r["id"],  # include the unique ID
+                "target_gps": (r["latitude"], r["longitude"]),
+                "score": 1.0
+            } 
+            for r in output_array if r["latitude"] is not None
+        ]
         if points and cad_path:
             central = points[0]["target_gps"]
+            # Pass the full points including IDs
             plot_cad.plot_cad_map(target_gps=central, points=points, cad_path=cad_path, output_file=output_file)
+
 
         return georef_csv_path
 

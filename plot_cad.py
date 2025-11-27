@@ -99,8 +99,9 @@ def plot_cad_map(target_gps, points=None, corner_gps=None, drone_gps=None,
                 fill=True,
                 fill_color=color,
                 fill_opacity=0.7,
-                popup=f"Score: {score:.2f}\nLat: {lat_pt:.7f}\nLon: {lon_pt:.7f}"
+                popup=f"ID: {pt.get('id', 'N/A')}\nScore: {score:.2f}\nLat: {lat_pt:.7f}\nLon: {lon_pt:.7f}"
             ).add_to(m)
+
 
 
     # --- Marker for target pixel ---
