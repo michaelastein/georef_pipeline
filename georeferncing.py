@@ -295,7 +295,7 @@ def laz_to_kdtree(laz_path, utm_epsg=UTM_EPSG):
             - tree (scipy.spatial.cKDTree): KD-Tree built from the LiDAR points (lon, lat).
             - points_z (numpy.ndarray): Array of z-values (elevation) corresponding to the points.
     """
-    # Read LiDAR file
+    # Read LiDAR file (.las or .laz)
     las = laspy.read(laz_path)
 
     # Transform UTM coordinates to WGS84 lat/lon
