@@ -121,5 +121,6 @@ Notes
     - Take the height of the solar panels above ground into account, maybe with LIDAR scans from the drone
     - take into account the physical distance and possible rotation between camera, imu, GPS and LIDAR to make it more accurate; consider the gimbal
     - put more effort into finding out the best feature matching algorithm, I only decided on some examplary results I've seen
+    - remove the images from when the drone turns
 
 
