@@ -121,30 +121,58 @@ def add_anomaly_to_csv(output_array: list, anomaly_type: str, latitude: float, l
 
 
 # ---------------- Remove matched anomalies ----------------
-def remove_matched_anomalies(matched_items: list, tol=2.0):
+def remove_matched_anomalies(matched_items: list, tol: float = 2.0):
     """
     Remove anomalies from the global csv_anomaly_array that have already been matched.
-    Matching is done by image basename and pixel coordinates.
+
+    This function ensures that anomalies which have been successfully georeferenced
+    and matched to the CSV are removed from `csv_anomaly_array`, so they are not
+    re-processed. Matching is done using both the normalized image name and
+    pixel coordinates within a specified tolerance.
 
     Args:
-        matched_items: List of dicts with matched anomalies
-        tol: tolerance (currently unused, could be for fuzzy matching)
+        matched_items (list): List of dictionaries representing matched anomalies.
+                              Each dict should contain:
+                                - "image_name": str
+                                - "pixel_x": float
+                                - "pixel_y": float
+        tol (float): Pixel tolerance. An anomaly is considered matched if its
+                     center coordinates are within `tol` pixels of a matched item.
+                     Defaults to 2.0 pixels.
+
+    Returns:
+        None. Updates the global `csv_anomaly_array` in-place.
     """
     global csv_anomaly_array
     if not csv_anomaly_array or not matched_items:
         return
 
-    # Build set of matched keys: (basename, x, y)
-    matched_set = set(
-        (os.path.basename(mi.get("image_name", "")).strip().lower(), mi.get("pixel_x"), mi.get("pixel_y"))
-        for mi in matched_items
-    )
+    def is_matched(row, matched_items, tol):
+        """
+        Check if a CSV anomaly row matches any of the matched_items within tolerance.
+        """
+        row_name = os.path.basename(row.get("image_name", "")).strip().lower()
+        row_x = row.get("center_x")
+        row_y = row.get("center_y")
 
-    # Filter out matched anomalies from global array
-    csv_anomaly_array = [
-        row for row in csv_anomaly_array
-        if (os.path.basename(row.get("image_name", "")).strip().lower(), row.get("center_x"), row.get("center_y")) not in matched_set
-    ]
+        # Skip if coordinates are missing
+        if row_x is None or row_y is None:
+            return False
+
+        for mi in matched_items:
+            mi_name = os.path.basename(mi.get("image_name", "")).strip().lower()
+            mi_x = mi.get("pixel_x")
+            mi_y = mi.get("pixel_y")
+            if mi_x is None or mi_y is None:
+                continue
+
+            # Match image name and check coordinate tolerance
+            if row_name == mi_name and abs(row_x - mi_x) <= tol and abs(row_y - mi_y) <= tol:
+                return True
+        return False
+
+    # Filter out rows that are matched
+    csv_anomaly_array = [row for row in csv_anomaly_array if not is_matched(row, matched_items, tol)]
 
 
 # ---------------- Process single anomaly ----------------

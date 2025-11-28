@@ -119,7 +119,7 @@ Notes
     - Use the GPU for some of the calculations to speed things up
     - further parallelize the anomaly and anomaly batch processing, as it uses only a small fraction of available CPU at the moment 
     - Take the height of the solar panels above ground into account, maybe with LIDAR scans from the drone
-    - take into account the physical distance and possible rotation between camera, imu, GPS and LIDAR to make it more accurate
+    - take into account the physical distance and possible rotation between camera, imu, GPS and LIDAR to make it more accurate; consider the gimbal
     - put more effort into finding out the best feature matching algorithm, I only decided on some examplary results I've seen
 
 
